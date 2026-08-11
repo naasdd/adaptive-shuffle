@@ -1,0 +1,9 @@
+{
+  "name": "adaptive-shuffle",
+  "version": "1.0.0",
+  "description": "Extensão Spicetify: shuffle inteligente que aprende seu comportamento.",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

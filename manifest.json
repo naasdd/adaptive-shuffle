@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Adaptive Shuffle",
+    "description": "Shuffle inteligente que aprende seu comportamento: musicas que vc ama tocam mais, as que vc sempre pula somem. Aprende sozinho com cada play/skip.",
+    "preview": "preview.png",
+    "main": "adaptive-shuffle.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "joseg" }
+    ],
+    "tags": ["shuffle", "queue", "adaptive", "smart", "recommendation"]
+  }
+]
