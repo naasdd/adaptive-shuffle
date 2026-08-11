@@ -337,19 +337,20 @@
         try { Spicetify.showNotification(msg, false, 4000); } catch (e) { notify(msg); }
     }
 
-    // Helper: pega URI da faixa atual (tenta data.item, data.track, e Queue.track)
+    // --- CSS global: bordas redondas no modal, sem bordas nos botoes ---
+    (function() {
+        var s = document.createElement("style");
+        s.id = "as-global";
+        s.textContent = ".main-nowPlayingBar-right button{border-radius:50% !important;border:none !important;outline:none !important}" +
+                         ".main-nowPlayingBar-right button:focus,.main-nowPlayingBar-right button[class*=active]{outline:none !important;box-shadow:none !important;border:none !important}" +
+                         ".main-nowPlayingBar-right button svg{margin:0 !important}";
+        document.body.appendChild(s);
+    })();
+
     var btnShuffle = new Spicetify.Playbar.Button(
         "Adaptive Shuffle",
         "shuffle",
-        function(self) {
-            self.active = true;
-            adaptiveReshuffleCurrentQueue().then(function() {
-                self.active = false;
-            }).catch(function(e) {
-                self.active = false;
-                notify("Erro ao reordenar: " + e);
-            });
-        },
+        function() { adaptiveReshuffleCurrentQueue(); },
         false, false
     );
     btnShuffle.register();
@@ -357,15 +358,13 @@
     var btnScore = new Spicetify.Playbar.Button(
         "Score",
         "enhance",
-        function(self) {
-            self.active = true;
+        function() {
             var uri = getCurrentTrackUri();
-            if (!uri) { notify("Nenhuma musica"); self.active = false; return; }
+            if (!uri) { notify("Nenhuma musica"); return; }
             var t = tracks[uri];
             var name = getCurrentTrackName() || uri.split(":").pop() || "?";
             var s = t ? t.s.toFixed(0) : "?";
             notify(name + "  Score:" + s + "  p:" + (t?t.p:0) + " s:" + (t?t.sk:0));
-            self.active = false;
         },
         false, false
     );
@@ -374,14 +373,9 @@
     var btnBoost = new Spicetify.Playbar.Button(
         "Turbinar",
         "heart-active",
-        function(self) {
-            self.active = true;
+        function() {
             var uri = getCurrentTrackUri();
-            if (!uri) {
-                notify("Nao foi possivel detectar a musica atual");
-                self.active = false;
-                return;
-            }
+            if (!uri) { notify("Nenhuma musica"); return; }
             var t = getTrack(uri);
             t.s = Math.min(t.s + 3, agg().clamp);
             t.pk++;
@@ -389,23 +383,20 @@
             if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
             saveTracks();
             notify("Turbinada! Score " + t.s.toFixed(0));
-            self.active = false;
         },
         false, false
     );
     btnBoost.register();
+    btnBoost.element.style.border = "none";
+    btnBoost.element.style.outline = "none";
+    btnBoost.element.style.boxShadow = "none";
 
     var btnAvoid = new Spicetify.Playbar.Button(
         "Evitar",
         "block",
-        function(self) {
-            self.active = true;
+        function() {
             var uri = getCurrentTrackUri();
-            if (!uri) {
-                notify("Nao foi possivel detectar a musica atual");
-                self.active = false;
-                return;
-            }
+            if (!uri) { notify("Nenhuma musica"); return; }
             var t = getTrack(uri);
             t.s = Math.max(t.s - 3, -agg().clamp);
             t.sk++;
@@ -413,7 +404,6 @@
             if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
             saveTracks();
             notify("Evitada! Score " + t.s.toFixed(0));
-            self.active = false;
         },
         false, false
     );
@@ -422,15 +412,8 @@
     var btnConfig = new Spicetify.Playbar.Button(
         "Config",
         '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M7.249 2.506a.75.75 0 0 1 1.502 0v.51a3.5 3.5 0 0 1 1.198.496l.367-.367a.75.75 0 1 1 1.06 1.06l-.367.367a3.5 3.5 0 0 1 .496 1.198h.51a.75.75 0 0 1 0 1.502h-.51a3.5 3.5 0 0 1-.496 1.198l.367.367a.75.75 0 1 1-1.06 1.06l-.367-.367a3.5 3.5 0 0 1-1.198.496v.51a.75.75 0 0 1-1.502 0v-.51a3.5 3.5 0 0 1-1.198-.496l-.367.367a.75.75 0 0 1-1.06-1.06l.367-.367a3.5 3.5 0 0 1-.496-1.198h-.51a.75.75 0 0 1 0-1.502h.51a3.5 3.5 0 0 1 .496-1.198l-.367-.367a.75.75 0 0 1 1.06-1.06l.367.367a3.5 3.5 0 0 1 1.198-.496V2.506zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>',
-        function(self) {
-            self.active = true;
-            try {
-                openSettings();
-            } catch(e) {
-                notify("Erro ao abrir configuracoes: " + e);
-            }
-            setTimeout(function() { self.active = false; }, 500);
-        }, false, false
+        function() { try { openSettings(); } catch(e) { notify("Erro: " + e); } },
+        false, false
     );
     btnConfig.register();
 
@@ -466,6 +449,15 @@
 
     function openSettings() {
         try {
+        // Injeta CSS pro modal (mais largo, border-radius)
+        var styleId = "as-modal-style";
+        if (!document.getElementById(styleId)) {
+            var s = document.createElement("style");
+            s.id = styleId;
+            s.textContent = "div[role=dialog] .main-rootlist-rootlistContent,div[role=dialog]{border-radius:14px !important}" +
+                "div[role=dialog]{--modal-width:560px !important;max-width:560px !important}";
+            document.body.appendChild(s);
+        }
         var entries = Object.keys(tracks).map(function(k) { return [k, tracks[k]]; });
         entries.sort(function(a, b) { return b[1].s - a[1].s; });
         var count = entries.length;
