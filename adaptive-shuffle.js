@@ -8,7 +8,7 @@
         return;
     }
 
-    const { Player, Platform, LocalStorage, React } = Spicetify;
+    const { Player, Platform, LocalStorage } = Spicetify;
     const { Type } = Spicetify.URI;
     const VERSION = "1.0.0";
     const STORE_KEY = "adaptiveShuffle:tracks";
@@ -187,18 +187,57 @@
 
     async function adaptiveReshuffleCurrentQueue() {
         try {
+            // Tenta pegar a playlist/contexto inteiro via context_uri
+            var data = Player.data;
+            var contextUri = data && data.context_uri;
+            var allTracks = null;
+
+            if (contextUri) {
+                try {
+                    var uriObj = Spicetify.URI.fromString(contextUri);
+                    if (uriObj.type === Type.PLAYLIST || uriObj.type === Type.PLAYLIST_V2) {
+                        allTracks = await fetchPlaylistTracks(contextUri);
+                    } else if (uriObj.type === Type.ALBUM) {
+                        allTracks = await fetchAlbumTracks(contextUri);
+                    }
+                } catch (e) {}
+            }
+
+            if (allTracks && allTracks.length >= 2) {
+                // Temos a playlist/album inteiro -> shuffle completo adaptativo
+                var shuffled = weightedShuffle(allTracks);
+                // Remove a musica atual do shuffle pra nao duplicar
+                var currentUri = getCurrentTrackUri();
+                if (currentUri) {
+                    shuffled = shuffled.filter(function(u) { return u !== currentUri; });
+                }
+                await setQueueFromUris(shuffled, true, contextUri);
+                // Forca tocar a primeira da fila nova (a atual continua por design)
+                var preview = shuffled.slice(1, 5).map(function(u) {
+                    var s = getTrack(u).s;
+                    return (s >= 0 ? "+" : "") + s.toFixed(0);
+                }).join(" ");
+                notify(shuffled.length + " faixas reordenadas. Proximas: " + preview);
+                return;
+            }
+
+            // Fallback: reordena so o nextUp
             var qs = getQueueState();
             var upcoming = qs.nextUp;
             if (upcoming.length < 2) {
                 notify("Fila pequena demais para embaralhar");
                 return;
             }
-            var shuffled = weightedShuffle(upcoming);
-            await setQueueFromUris(shuffled, true, null);
-            notify("Fila reordenada: " + shuffled.length + " musicas");
+            var shuffledNext = weightedShuffle(upcoming);
+            await setQueueFromUris(shuffledNext, true, null);
+            var preview = shuffledNext.slice(0, 4).map(function(u) {
+                var s = getTrack(u).s;
+                return (s >= 0 ? "+" : "") + s.toFixed(0);
+            }).join(" ");
+            notify(upcoming.length + " reordenadas. Topo: " + preview);
         } catch (e) {
             console.error("[AS]", e);
-            notify("Erro ao reordenar", true);
+            notify("Erro ao reordenar: " + (e && e.message || e));
         }
     }
 
@@ -407,11 +446,12 @@
     // --- UI: MENU & SETTINGS ---
 
     function openSettings() {
+        try {
         var entries = Object.keys(tracks).map(function(k) { return [k, tracks[k]]; });
         entries.sort(function(a, b) { return b[1].s - a[1].s; });
         var count = entries.length;
 
-        var style = React.createElement("style", null,
+        var style = Spicetify.React.createElement("style", null,
             ".as-row{display:flex;padding:10px 0;align-items:center}" +
             ".as-label{flex:1;color:var(--spice-text)}" +
             ".as-action{margin-left:15px}" +
@@ -438,12 +478,12 @@
                 var ratio = (track.s + settings.clamp) / (2 * settings.clamp);
                 var pct = Math.round(ratio * 100);
                 var color = ratio >= 0.5 ? "#1ed760" : "#e22134";
-                return React.createElement("div", { key: uri, className: "as-track-item" },
-                    React.createElement("span", { className: "as-track-name", title: uri }, name),
-                    React.createElement("div", { className: "as-bar" },
-                        React.createElement("div", { className: "as-bar-fill", style: { width: pct + "%", background: color } })
+                return Spicetify.React.createElement("div", { key: uri, className: "as-track-item" },
+                    Spicetify.React.createElement("span", { className: "as-track-name", title: uri }, name),
+                    Spicetify.React.createElement("div", { className: "as-bar" },
+                        Spicetify.React.createElement("div", { className: "as-bar-fill", style: { width: pct + "%", background: color } })
                     ),
-                    React.createElement("span", { className: "as-score" }, track.s.toFixed(1))
+                    Spicetify.React.createElement("span", { className: "as-score" }, track.s.toFixed(1))
                 );
             });
         }
@@ -452,14 +492,14 @@
         var topFav = buildList(entries, 15);
         var topAvo = buildList(sortedAsc, 15);
 
-        var content = React.createElement("div", null,
+        var content = Spicetify.React.createElement("div", null,
             style,
-            React.createElement("h3", { style: { color: "var(--spice-text)" } }, "Aprendizado"),
-            React.createElement("hr", { className: "as-divider" }),
-            React.createElement("div", { className: "as-row" },
-                React.createElement("span", { className: "as-label" }, "Aprendizado: " + (settings.learning ? "LIGADO" : "DESLIGADO")),
-                React.createElement("div", { className: "as-action" },
-                    React.createElement("button", {
+            Spicetify.React.createElement("h3", { style: { color: "var(--spice-text)" } }, "Aprendizado"),
+            Spicetify.React.createElement("hr", { className: "as-divider" }),
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Aprendizado: " + (settings.learning ? "LIGADO" : "DESLIGADO")),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("button", {
                         className: "as-btn",
                         onClick: function() {
                             settings.learning = !settings.learning;
@@ -471,10 +511,10 @@
                     }, settings.learning ? "Desligar" : "Ligar")
                 )
             ),
-            React.createElement("div", { className: "as-row" },
-                React.createElement("span", { className: "as-label" }, "Agressividade: " + settings.aggressiveness.toUpperCase()),
-                React.createElement("div", { className: "as-action" },
-                    React.createElement("select", {
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Agressividade: " + settings.aggressiveness.toUpperCase()),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("select", {
                         className: "as-select",
                         value: settings.aggressiveness,
                         onChange: function(e) {
@@ -485,39 +525,39 @@
                             openSettings();
                         }
                     },
-                        React.createElement("option", { value: "leve" }, "Leve"),
-                        React.createElement("option", { value: "normal" }, "Normal"),
-                        React.createElement("option", { value: "intenso" }, "Intenso")
+                        Spicetify.React.createElement("option", { value: "leve" }, "Leve"),
+                        Spicetify.React.createElement("option", { value: "normal" }, "Normal"),
+                        Spicetify.React.createElement("option", { value: "intenso" }, "Intenso")
                     )
                 )
             ),
 
-            React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Estatisticas"),
-            React.createElement("hr", { className: "as-divider" }),
-            React.createElement("div", { className: "as-stat" }, "Faixas conhecidas: " + count),
-            React.createElement("div", { className: "as-stat" }, "Mais amadas (top 15)"),
-            React.createElement("div", null, topFav),
-            React.createElement("div", { className: "as-stat", style: { marginTop: "8px" } }, "Mais evitadas (top 15)"),
-            React.createElement("div", null, topAvo),
-            React.createElement("div", { className: "as-stat", style: { marginTop: "6px", fontSize: "12px" } },
+            Spicetify.React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Estatisticas"),
+            Spicetify.React.createElement("hr", { className: "as-divider" }),
+            Spicetify.React.createElement("div", { className: "as-stat" }, "Faixas conhecidas: " + count),
+            Spicetify.React.createElement("div", { className: "as-stat" }, "Mais amadas (top 15)"),
+            Spicetify.React.createElement("div", null, topFav),
+            Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "8px" } }, "Mais evitadas (top 15)"),
+            Spicetify.React.createElement("div", null, topAvo),
+            Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "6px", fontSize: "12px" } },
                 "Dica: use os botoes na barra do player para turbinar/evitar/ver score da musica tocando"
             ),
 
-            React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Acoes"),
-            React.createElement("hr", { className: "as-divider" }),
-            React.createElement("div", { className: "as-row" },
-                React.createElement("span", { className: "as-label" }, "Apagar tudo e comecar do zero"),
-                React.createElement("div", { className: "as-action" },
-                    React.createElement("button", {
+            Spicetify.React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Acoes"),
+            Spicetify.React.createElement("hr", { className: "as-divider" }),
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Apagar tudo e comecar do zero"),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("button", {
                         className: "as-btn as-danger",
                         onClick: function() { tracks = {}; saveTracks(); Spicetify.PopupModal.hide(); notify("Historico apagado!"); }
                     }, "Resetar")
                 )
             ),
-            React.createElement("div", { className: "as-row" },
-                React.createElement("span", { className: "as-label" }, count + " faixas conhecidas. Reordenar fila:"),
-                React.createElement("div", { className: "as-action" },
-                    React.createElement("button", {
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, count + " faixas conhecidas. Reordenar fila:"),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("button", {
                         className: "as-btn",
                         onClick: function() { adaptiveReshuffleCurrentQueue(); }
                     }, "Embaralhar")
@@ -526,6 +566,10 @@
         );
 
         Spicetify.PopupModal.display({ title: "Adaptive Shuffle", content: content, isLarge: true });
+        } catch (e) {
+            console.error("[AS] openSettings:", e);
+            notify("Erro no modal: " + (e && e.message || String(e)));
+        }
     }
 
     // --- MENU & SETTINGS (com fallback no botao) ---
