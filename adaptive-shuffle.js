@@ -73,22 +73,36 @@
         return tracks[uri];
     }
 
-    function getCurrentTrackName() {
+    // Captura URI e nome (usando Queue.track.contextTrack, q, Queue, Player.data)
+    function getTrackInfo() {
+        var uri = null, name = "";
         try {
-            var data = Player.data;
-            if (data) {
-                if (data.item) {
-                    if (data.item.name) return data.item.name;
-                    if (data.item.metadata && data.item.metadata.title) return data.item.metadata.title;
-                }
-                if (data.track) {
-                    if (data.track.name) return data.track.name;
-                    if (data.track.metadata && data.track.metadata.title) return data.track.metadata.title;
+            var qt = Spicetify.Queue && Spicetify.Queue.track;
+            if (qt) {
+                var ct = qt.contextTrack || qt;
+                uri = ct.uri || uri;
+                if (ct.metadata) name = ct.metadata.title || ct.metadata.track_title || name;
+            }
+            var d = Player.data;
+            if (d) {
+                var it = d.item || d.track;
+                if (it) {
+                    uri = it.uri || uri;
+                    name = it.name || it.title || name;
+                    if (it.metadata) name = it.metadata.title || it.metadata.track_title || name;
                 }
             }
+            var qs = Platform.PlayerAPI._queue._queueState;
+            if (qs && qs.current) {
+                uri = qs.current.uri || uri;
+                var ctm = (qs.current.contextTrack || {}).metadata;
+                if (ctm) name = ctm.title || ctm.track_title || name;
+            }
         } catch (e) {}
-        return "";
+        return { uri: uri, name: name };
     }
+    function getCurrentTrackUri() { return getTrackInfo().uri; }
+    function getCurrentTrackName() { return getTrackInfo().name; }
 
     function classifyListened(ratio, listenedMs) {
         if (listenedMs < settings.minListenMs) return null;
@@ -117,8 +131,10 @@
         if (t.s > clamp) t.s = clamp;
         if (t.s < -clamp) t.s = -clamp;
         t.t = Date.now();
+        // Sempre salva o nome se fornecido (vem do tracker com nome da musica certa)
         if (optName && optName !== "") t.n = optName;
-        else if (!t.n) { var n = getCurrentTrackName(); if (n && n !== "") t.n = n; }
+        // Fallback: se ainda nao tem nome, usa o fragmento do URI
+        if (!t.n || t.n === "") t.n = uri.split(":").pop() || "";
         saveTracks();
     }
 
@@ -161,16 +177,16 @@
                 if (kind) recordEvent(lastUri, kind, lastTrackName);
             }
 
-            var data = Player.data;
-            if (data && data.item) {
-                lastUri = data.item.uri;
-                lastTrackName = data.item.name || data.item.metadata?.title || "";
-                lastDurationMs = data.duration;
-                lastProgressMs = 0;
+            var info = getTrackInfo();
+            if (info.uri) {
+                lastUri = info.uri;
+                lastTrackName = info.name;
+                lastDurationMs = Player.getDuration();
             } else {
                 lastUri = null;
                 lastTrackName = "";
             }
+            lastProgressMs = 0;
 
             // check for queue adds
             var qs = getQueueState();
@@ -322,23 +338,6 @@
     }
 
     // Helper: pega URI da faixa atual (tenta data.item, data.track, e Queue.track)
-    function getCurrentTrackUri() {
-        var data = Player.data;
-        if (data) {
-            if (data.item && data.item.uri) return data.item.uri;
-            if (data.track && data.track.uri) return data.item ? data.item.uri : data.track.uri;
-        }
-        try {
-            var q = Spicetify.Queue;
-            if (q && q.track && q.track.uri) return q.track.uri;
-        } catch (e) {}
-        try {
-            var qs = Platform.PlayerAPI._queue._queueState;
-            if (qs && qs.current && qs.current.uri) return qs.current.uri;
-        } catch (e) {}
-        return null;
-    }
-
     var btnShuffle = new Spicetify.Playbar.Button(
         "Adaptive Shuffle",
         "shuffle",
@@ -361,18 +360,11 @@
         function(self) {
             self.active = true;
             var uri = getCurrentTrackUri();
-            if (!uri) {
-                notify("Nao foi possivel detectar a musica atual");
-                self.active = false;
-                return;
-            }
+            if (!uri) { notify("Nenhuma musica"); self.active = false; return; }
             var t = tracks[uri];
-            if (!t) {
-                notify("Faixa ainda nao avaliada. Continue ouvindo!");
-                self.active = false;
-                return;
-            }
-            notify("Score " + t.s.toFixed(1) + "  plays:" + t.p + " skips:" + t.sk + " queue:" + t.q);
+            var name = getCurrentTrackName() || uri.split(":").pop() || "?";
+            var s = t ? t.s.toFixed(0) : "?";
+            notify(name + "  Score:" + s + "  p:" + (t?t.p:0) + " s:" + (t?t.sk:0));
             self.active = false;
         },
         false, false
@@ -486,9 +478,8 @@
             ".as-stat{padding:4px 0;color:var(--spice-subtext)}" +
             ".as-track-item{display:flex;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)}" +
             ".as-track-name{flex:1;color:var(--spice-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}" +
-            ".as-bar{width:100px;height:8px;background:linear-gradient(to right,#5c0000 0%,#c0392b 20%,#888 45%,#666 50%,#888 55%,#1db954 65%,#0ce6f2 82%,#ffd700 100%);border-radius:4px;margin:0 10px;position:relative;overflow:hidden}" +
-            ".as-bar-fill{position:absolute;top:0;height:100%;border-radius:4px;box-shadow:0 0 6px currentColor;transition:left .3s,width .3s}" +
-            ".as-bar-dot{position:absolute;top:-3px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid currentColor;box-shadow:0 0 8px currentColor;transform:translateX(-7px);transition:left .3s}" +
+            ".as-bar{width:80px;height:6px;background:var(--spice-card);border-radius:3px;margin:0 8px;overflow:hidden}" +
+            ".as-bar-fill{height:100%;border-radius:3px;transition:width .3s,background .3s}" +
             ".as-score{width:32px;text-align:right;color:var(--spice-subtext);font-size:12px}" +
             "button.as-btn{border:0;border-radius:8px;background:var(--spice-button);color:var(--spice-text);cursor:pointer;padding:8px 14px}" +
             "button.as-danger{background:#e22134}" +
@@ -506,19 +497,20 @@
                 var name = (track.n && track.n !== "") ? track.n : (uri.split(":").pop() || uri);
                 var clamp = agg().clamp;
                 var ratio = (track.s + clamp) / (2 * clamp);
-                var left = Math.round(ratio * 100);
+                var pct = Math.round(ratio * 100);
                 var fillColor;
-                if (ratio > 0.8) fillColor = "#ffd700";
-                else if (ratio > 0.65) fillColor = "#0ce6f2";
-                else if (ratio > 0.55) fillColor = "#1db954";
+                if (ratio > 0.85) fillColor = "#ffd700";
+                else if (ratio > 0.7) fillColor = "#1db954";
+                else if (ratio > 0.55) fillColor = "#4caf50";
                 else if (ratio > 0.45) fillColor = "#888";
-                else if (ratio > 0.2) fillColor = "#c0392b";
+                else if (ratio > 0.3) fillColor = "#e67e22";
+                else if (ratio > 0.15) fillColor = "#c0392b";
                 else fillColor = "#5c0000";
 
                 return Spicetify.React.createElement("div", { key: uri, className: "as-track-item" },
-                    Spicetify.React.createElement("span", { className: "as-track-name", title: uri }, name),
+                    Spicetify.React.createElement("span", { className: "as-track-name", title: name }, name),
                     Spicetify.React.createElement("div", { className: "as-bar" },
-                        Spicetify.React.createElement("div", { className: "as-bar-dot", style: { left: left + "%", color: fillColor } })
+                        Spicetify.React.createElement("div", { className: "as-bar-fill", style: { width: pct + "%", background: fillColor } })
                     ),
                     Spicetify.React.createElement("span", { className: "as-score" }, track.s.toFixed(0))
                 );
