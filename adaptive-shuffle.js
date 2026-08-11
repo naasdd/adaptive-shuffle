@@ -36,7 +36,7 @@
     var settings = loadSettings();
     var tracks = {};
     var knownQueuedUris = {};
-    var lastUri = null, lastProgressMs = 0, lastDurationMs = 0;
+    var lastUri = null, lastTrackName = "", lastProgressMs = 0, lastDurationMs = 0;
     var prevQueuedUris = {};
 
     function loadSettings() {
@@ -77,8 +77,14 @@
         try {
             var data = Player.data;
             if (data) {
-                if (data.item && data.item.name) return data.item.name;
-                if (data.track && data.track.name) return data.track.name;
+                if (data.item) {
+                    if (data.item.name) return data.item.name;
+                    if (data.item.metadata && data.item.metadata.title) return data.item.metadata.title;
+                }
+                if (data.track) {
+                    if (data.track.name) return data.track.name;
+                    if (data.track.metadata && data.track.metadata.title) return data.track.metadata.title;
+                }
             }
         } catch (e) {}
         return "";
@@ -97,7 +103,7 @@
         return a[kind] || 0;
     }
 
-    function recordEvent(uri, kind) {
+    function recordEvent(uri, kind, optName) {
         if (!settings.learning) return;
         var t = getTrack(uri);
         switch (kind) {
@@ -111,7 +117,8 @@
         if (t.s > clamp) t.s = clamp;
         if (t.s < -clamp) t.s = -clamp;
         t.t = Date.now();
-        if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
+        if (optName && optName !== "") t.n = optName;
+        else if (!t.n) { var n = getCurrentTrackName(); if (n && n !== "") t.n = n; }
         saveTracks();
     }
 
@@ -151,14 +158,18 @@
             if (lastUri && lastDurationMs > 0) {
                 var ratio = lastProgressMs / lastDurationMs;
                 var kind = classifyListened(ratio, lastProgressMs);
-                if (kind) recordEvent(lastUri, kind);
+                if (kind) recordEvent(lastUri, kind, lastTrackName);
             }
 
             var data = Player.data;
             if (data && data.item) {
                 lastUri = data.item.uri;
+                lastTrackName = data.item.name || data.item.metadata?.title || "";
                 lastDurationMs = data.duration;
                 lastProgressMs = 0;
+            } else {
+                lastUri = null;
+                lastTrackName = "";
             }
 
             // check for queue adds
@@ -475,8 +486,9 @@
             ".as-stat{padding:4px 0;color:var(--spice-subtext)}" +
             ".as-track-item{display:flex;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)}" +
             ".as-track-name{flex:1;color:var(--spice-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}" +
-            ".as-bar{width:80px;height:6px;background:var(--spice-card);border-radius:3px;margin:0 8px;overflow:hidden}" +
-            ".as-bar-fill{height:100%;border-radius:3px}" +
+            ".as-bar{width:100px;height:8px;background:linear-gradient(to right,#5c0000 0%,#c0392b 20%,#888 45%,#666 50%,#888 55%,#1db954 65%,#0ce6f2 82%,#ffd700 100%);border-radius:4px;margin:0 10px;position:relative;overflow:hidden}" +
+            ".as-bar-fill{position:absolute;top:0;height:100%;border-radius:4px;box-shadow:0 0 6px currentColor;transition:left .3s,width .3s}" +
+            ".as-bar-dot{position:absolute;top:-3px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid currentColor;box-shadow:0 0 8px currentColor;transform:translateX(-7px);transition:left .3s}" +
             ".as-score{width:32px;text-align:right;color:var(--spice-subtext);font-size:12px}" +
             "button.as-btn{border:0;border-radius:8px;background:var(--spice-button);color:var(--spice-text);cursor:pointer;padding:8px 14px}" +
             "button.as-danger{background:#e22134}" +
@@ -494,14 +506,21 @@
                 var name = (track.n && track.n !== "") ? track.n : (uri.split(":").pop() || uri);
                 var clamp = agg().clamp;
                 var ratio = (track.s + clamp) / (2 * clamp);
-                var pct = Math.round(ratio * 100);
-                var color = ratio >= 0.5 ? "#1ed760" : "#e22134";
+                var left = Math.round(ratio * 100);
+                var fillColor;
+                if (ratio > 0.8) fillColor = "#ffd700";
+                else if (ratio > 0.65) fillColor = "#0ce6f2";
+                else if (ratio > 0.55) fillColor = "#1db954";
+                else if (ratio > 0.45) fillColor = "#888";
+                else if (ratio > 0.2) fillColor = "#c0392b";
+                else fillColor = "#5c0000";
+
                 return Spicetify.React.createElement("div", { key: uri, className: "as-track-item" },
                     Spicetify.React.createElement("span", { className: "as-track-name", title: uri }, name),
                     Spicetify.React.createElement("div", { className: "as-bar" },
-                        Spicetify.React.createElement("div", { className: "as-bar-fill", style: { width: pct + "%", background: color } })
+                        Spicetify.React.createElement("div", { className: "as-bar-dot", style: { left: left + "%", color: fillColor } })
                     ),
-                    Spicetify.React.createElement("span", { className: "as-score" }, track.s.toFixed(1))
+                    Spicetify.React.createElement("span", { className: "as-score" }, track.s.toFixed(0))
                 );
             });
         }
@@ -601,18 +620,6 @@
 
     // --- INIT ---
 
-    var init = function() {
-        try {
-            var d = Player.data;
-            if (d && d.item) { lastUri = d.item.uri; lastDurationMs = d.duration; }
-            var qs = getQueueState();
-            var p = {};
-            for (var i = 0; i < qs.queued.length; i++) p[qs.queued[i]] = true;
-            prevQueuedUris = p;
-        } catch (e) {}
-    };
-    init();
-
     window.AdaptiveShuffle = {
         version: VERSION, settings: settings, tracks: tracks,
         getTrack: getTrack, recordEvent: recordEvent, weightedShuffle: weightedShuffle,
@@ -620,11 +627,31 @@
         _resetTracking: function() {
             try {
                 var d = Player.data;
-                if (d && d.item) { lastUri = d.item.uri; lastDurationMs = d.duration; }
+                if (d && d.item) {
+                    lastUri = d.item.uri;
+                    lastTrackName = d.item.name || (d.item.metadata && d.item.metadata.title) || "";
+                    lastDurationMs = d.duration;
+                }
                 lastProgressMs = 0;
             } catch (e) {}
         }
     };
+
+    var init = function() {
+        try {
+            var d = Player.data;
+            if (d && d.item) {
+                lastUri = d.item.uri;
+                lastTrackName = d.item.name || (d.item.metadata && d.item.metadata.title) || "";
+                lastDurationMs = d.duration;
+            }
+            var qs = getQueueState();
+            var p = {};
+            for (var i = 0; i < qs.queued.length; i++) p[qs.queued[i]] = true;
+            prevQueuedUris = p;
+        } catch (e) {}
+    };
+    init();
 
     console.log("[Adaptive Shuffle v" + VERSION + "] carregado. " + Object.keys(tracks).length + " faixas.");
 })();
