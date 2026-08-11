@@ -22,15 +22,16 @@
         heavySkipThreshold: 0.10,
         minListenMs: 3000,
         decay: 0.9,
-        clamp: 10,
         pollIntervalMs: 15000,
     };
 
-    const DELTAS = {
-        leve:    { full: 1.0,  skip: -1.0,  heavySkip: -1.5,  queueAdd: 1.5,  pick: 1.0  },
-        normal: { full: 2.0,  skip: -2.0,  heavySkip: -3.0,  queueAdd: 3.0,  pick: 2.0  },
-        intenso: { full: 3.0,  skip: -3.0,  heavySkip: -5.0,  queueAdd: 5.0,  pick: 3.0  },
+    const AGGRESSIVENESS = {
+        leve:    { clamp: 20, weightDiv: 3,  full: 1.0,  skip: -1.0,  heavySkip: -1.5,  queueAdd: 1.5,  pick: 1.0  },
+        normal: { clamp: 35, weightDiv: 2,  full: 2.0,  skip: -2.0,  heavySkip: -3.0,  queueAdd: 3.0,  pick: 2.0  },
+        intenso: { clamp: 50, weightDiv: 1.2, full: 3.0, skip: -3.0, heavySkip: -5.0, queueAdd: 5.0, pick: 3.0 },
     };
+
+    function agg() { return AGGRESSIVENESS[settings.aggressiveness] || AGGRESSIVENESS.normal; }
 
     var settings = loadSettings();
     var tracks = {};
@@ -68,8 +69,19 @@
     tracks = loadTracks();
 
     function getTrack(uri) {
-        if (!tracks[uri]) tracks[uri] = { s: 0, p: 0, sk: 0, q: 0, pk: 0, t: Date.now() };
+        if (!tracks[uri]) tracks[uri] = { s: 0, p: 0, sk: 0, q: 0, pk: 0, t: Date.now(), n: "" };
         return tracks[uri];
+    }
+
+    function getCurrentTrackName() {
+        try {
+            var data = Player.data;
+            if (data) {
+                if (data.item && data.item.name) return data.item.name;
+                if (data.track && data.track.name) return data.track.name;
+            }
+        } catch (e) {}
+        return "";
     }
 
     function classifyListened(ratio, listenedMs) {
@@ -81,8 +93,8 @@
     }
 
     function getDelta(kind) {
-        var d = DELTAS[settings.aggressiveness] || DELTAS.normal;
-        return d[kind] || 0;
+        var a = agg();
+        return a[kind] || 0;
     }
 
     function recordEvent(uri, kind) {
@@ -95,14 +107,16 @@
             case "pick": t.pk++; break;
         }
         t.s = t.s * settings.decay + getDelta(kind);
-        if (t.s > settings.clamp) t.s = settings.clamp;
-        if (t.s < -settings.clamp) t.s = -settings.clamp;
+        var clamp = agg().clamp;
+        if (t.s > clamp) t.s = clamp;
+        if (t.s < -clamp) t.s = -clamp;
         t.t = Date.now();
+        if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
         saveTracks();
     }
 
     function weightFromScore(score) {
-        return Math.pow(2, score / 3);
+        return Math.pow(2, score / agg().weightDiv);
     }
 
     function weightedShuffle(uris) {
@@ -366,11 +380,12 @@
                 return;
             }
             var t = getTrack(uri);
-            t.s = Math.min(t.s + 5, settings.clamp);
+            t.s = Math.min(t.s + 3, agg().clamp);
             t.pk++;
             t.t = Date.now();
+            if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
             saveTracks();
-            notify("Turbinada! Score " + t.s.toFixed(1));
+            notify("Turbinada! Score " + t.s.toFixed(0));
             self.active = false;
         },
         false, false
@@ -389,11 +404,12 @@
                 return;
             }
             var t = getTrack(uri);
-            t.s = Math.max(t.s - 5, -settings.clamp);
+            t.s = Math.max(t.s - 3, -agg().clamp);
             t.sk++;
             t.t = Date.now();
+            if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
             saveTracks();
-            notify("Evitada! Score " + t.s.toFixed(1));
+            notify("Evitada! Score " + t.s.toFixed(0));
             self.active = false;
         },
         false, false
@@ -468,14 +484,16 @@
             ".as-toggle{width:44px;height:24px;border-radius:12px;background:var(--spice-button-disabled);position:relative;cursor:pointer;transition:background .2s}" +
             ".as-toggle.on{background:var(--spice-button)}" +
             ".as-toggle::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s}" +
-            ".as-toggle.on::after{transform:translateX(20px)}"
+            ".as-toggle.on::after{transform:translateX(20px)}" +
+            ".as-list-scroll{max-height:260px;overflow-y:auto;padding-right:4px}"
         );
 
         function buildList(arr, n) {
             return arr.slice(0, n).map(function(e) {
                 var uri = e[0], track = e[1];
-                var name = uri.split(":").pop() || uri;
-                var ratio = (track.s + settings.clamp) / (2 * settings.clamp);
+                var name = (track.n && track.n !== "") ? track.n : (uri.split(":").pop() || uri);
+                var clamp = agg().clamp;
+                var ratio = (track.s + clamp) / (2 * clamp);
                 var pct = Math.round(ratio * 100);
                 var color = ratio >= 0.5 ? "#1ed760" : "#e22134";
                 return Spicetify.React.createElement("div", { key: uri, className: "as-track-item" },
@@ -536,9 +554,9 @@
             Spicetify.React.createElement("hr", { className: "as-divider" }),
             Spicetify.React.createElement("div", { className: "as-stat" }, "Faixas conhecidas: " + count),
             Spicetify.React.createElement("div", { className: "as-stat" }, "Mais amadas (top 15)"),
-            Spicetify.React.createElement("div", null, topFav),
+            Spicetify.React.createElement("div", { className: "as-list-scroll" }, topFav),
             Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "8px" } }, "Mais evitadas (top 15)"),
-            Spicetify.React.createElement("div", null, topAvo),
+            Spicetify.React.createElement("div", { className: "as-list-scroll" }, topAvo),
             Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "6px", fontSize: "12px" } },
                 "Dica: use os botoes na barra do player para turbinar/evitar/ver score da musica tocando"
             ),
@@ -565,7 +583,7 @@
             )
         );
 
-        Spicetify.PopupModal.display({ title: "Adaptive Shuffle", content: content, isLarge: true });
+        Spicetify.PopupModal.display({ title: "Adaptive Shuffle", content: content });
         } catch (e) {
             console.error("[AS] openSettings:", e);
             notify("Erro no modal: " + (e && e.message || String(e)));

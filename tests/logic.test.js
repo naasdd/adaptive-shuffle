@@ -117,17 +117,17 @@ test("agressividade intenso aplica deltas maiores", () => {
 test("score respeita limite superior (clamp)", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    for (let i = 0; i < 30; i++) api.recordEvent("t:clamp", "full");
+    for (let i = 0; i < 50; i++) api.recordEvent("t:clamp", "full");
     const s = api.getTrack("t:clamp").s;
-    assert.ok(s <= api.settings.clamp + 0.001, `score ${s} deve respeitar clamp ${api.settings.clamp}`);
+    assert.ok(s <= 36, `score ${s} deve respeitar clamp (normal ≈ 35)`);
 });
 
 test("score respeita limite inferior (-clamp)", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    for (let i = 0; i < 30; i++) api.recordEvent("t:clampneg", "skip");
+    for (let i = 0; i < 50; i++) api.recordEvent("t:clampneg", "skip");
     const s = api.getTrack("t:clampneg").s;
-    assert.ok(s >= -api.settings.clamp - 0.001, `score ${s} deve respeitar -clamp ${-api.settings.clamp}`);
+    assert.ok(s >= -36, `score ${s} deve respeitar -clamp (normal ≈ -35)`);
 });
 
 // ============================================================
