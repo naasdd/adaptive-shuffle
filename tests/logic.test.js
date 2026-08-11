@@ -21,6 +21,7 @@ function loadExtension(env) {
     const context = vm.createContext({
         window: {},
         console,
+        alert: () => {},           // mock do alert nativo do browser
         setTimeout: (cb, ms) => { try { cb(); } catch (e) {} return 1; },
         clearTimeout: noop,
         setInterval: noop,        // inert: não agenda nada
