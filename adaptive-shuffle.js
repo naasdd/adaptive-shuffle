@@ -10,7 +10,7 @@
 
     const { Player, Platform, LocalStorage } = Spicetify;
     const { Type } = Spicetify.URI;
-    const VERSION = "1.0.0";
+    const VERSION = "1.1.0";
     const STORE_KEY = "adaptiveShuffle:tracks";
     const SETTINGS_KEY = "adaptiveShuffle:settings";
 
@@ -23,6 +23,9 @@
         minListenMs: 3000,
         decay: 0.9,
         pollIntervalMs: 15000,
+        seenWelcome: false,
+        autoShuffle: false,
+        autoShuffleThreshold: 3,
     };
 
     const AGGRESSIVENESS = {
@@ -38,6 +41,7 @@
     var knownQueuedUris = {};
     var lastUri = null, lastTrackName = "", lastProgressMs = 0, lastDurationMs = 0;
     var prevQueuedUris = {};
+    var autoShufflePending = false;
 
     function loadSettings() {
         try {
@@ -197,6 +201,8 @@
             var newPrev = {};
             for (var i = 0; i < cur.length; i++) newPrev[cur[i]] = true;
             prevQueuedUris = newPrev;
+
+            maybeAutoShuffle();
         } catch (e) {}
     });
 
@@ -226,7 +232,7 @@
 
     // --- QUEUE API ---
 
-    async function adaptiveReshuffleCurrentQueue() {
+    async function adaptiveReshuffleCurrentQueue(silent) {
         try {
             // Tenta pegar a playlist/contexto inteiro via context_uri
             var data = Player.data;
@@ -254,11 +260,13 @@
                 }
                 await setQueueFromUris(shuffled, true, contextUri);
                 // Forca tocar a primeira da fila nova (a atual continua por design)
-                var preview = shuffled.slice(1, 5).map(function(u) {
-                    var s = getTrack(u).s;
-                    return (s >= 0 ? "+" : "") + s.toFixed(0);
-                }).join(" ");
-                notify(shuffled.length + " faixas reordenadas. Proximas: " + preview);
+                if (!silent) {
+                    var preview = shuffled.slice(1, 5).map(function(u) {
+                        var s = getTrack(u).s;
+                        return (s >= 0 ? "+" : "") + s.toFixed(0);
+                    }).join(" ");
+                    notify(shuffled.length + " faixas reordenadas. Proximas: " + preview);
+                }
                 return;
             }
 
@@ -266,20 +274,33 @@
             var qs = getQueueState();
             var upcoming = qs.nextUp;
             if (upcoming.length < 2) {
-                notify("Fila pequena demais para embaralhar");
+                if (!silent) notify("Fila pequena demais para embaralhar");
                 return;
             }
             var shuffledNext = weightedShuffle(upcoming);
             await setQueueFromUris(shuffledNext, true, null);
-            var preview = shuffledNext.slice(0, 4).map(function(u) {
-                var s = getTrack(u).s;
-                return (s >= 0 ? "+" : "") + s.toFixed(0);
-            }).join(" ");
-            notify(upcoming.length + " reordenadas. Topo: " + preview);
+            if (!silent) {
+                var preview = shuffledNext.slice(0, 4).map(function(u) {
+                    var s = getTrack(u).s;
+                    return (s >= 0 ? "+" : "") + s.toFixed(0);
+                }).join(" ");
+                notify(upcoming.length + " reordenadas. Topo: " + preview);
+            }
         } catch (e) {
             console.error("[AS]", e);
-            notify("Erro ao reordenar: " + (e && e.message || e));
+            if (!silent) notify("Erro ao reordenar: " + (e && e.message || e));
         }
+    }
+
+    function maybeAutoShuffle() {
+        if (!settings.autoShuffle || autoShufflePending) return;
+        var qs = getQueueState();
+        if (qs.nextUp.length >= settings.autoShuffleThreshold) return;
+        autoShufflePending = true;
+        adaptiveReshuffleCurrentQueue(true).then(
+            function() { autoShufflePending = false; },
+            function() { autoShufflePending = false; }
+        );
     }
 
     async function playAdaptive(uris, contextUri) {
@@ -337,6 +358,52 @@
         try { Spicetify.showNotification(msg, false, 4000); } catch (e) { notify(msg); }
     }
 
+    function openWelcome() {
+        var style = Spicetify.React.createElement("style", null,
+            ".as-welcome{font-family:var(--glue-font-family,CircularSp,spotify-circular,sans-serif);padding:8px 16px;color:var(--spice-text)}" +
+            ".as-welcome h2{font-size:20px;margin:0 0 8px;color:var(--spice-text)}" +
+            ".as-welcome p{font-size:14px;line-height:1.5;margin:0 0 10px;color:var(--spice-subtext)}" +
+            ".as-welcome .as-step{background:rgba(255,255,255,0.06);border-radius:10px;padding:10px 14px;margin-bottom:12px}" +
+            ".as-welcome .as-step strong{color:var(--spice-text)}" +
+            ".as-welcome .as-actions{display:flex;gap:10px;margin-top:16px}" +
+            ".as-welcome button{border:0;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600}" +
+            ".as-welcome button.as-primary{background:var(--spice-button);color:var(--spice-text)}" +
+            ".as-welcome button.as-secondary{background:transparent;color:var(--spice-subtext)}"
+        );
+
+        var content = Spicetify.React.createElement("div", { className: "as-welcome" },
+            style,
+            Spicetify.React.createElement("h2", null, "Bem-vindo ao Adaptive Shuffle!"),
+            Spicetify.React.createElement("p", null, "Shuffle inteligente que aprende seu gosto e organiza a fila pra tocar mais do que voce gosta."),
+
+            Spicetify.React.createElement("div", { className: "as-step" },
+                Spicetify.React.createElement("strong", null, "Aprende sozinho"),
+                Spicetify.React.createElement("p", null, "Use o Spotify normalmente. Musicas ouvidas ate o fim sobem; musicas sempre puladas desaparecem. Nada e enviado pra fora, tudo fica salvo no seu computador.")
+            ),
+            Spicetify.React.createElement("div", { className: "as-step" },
+                Spicetify.React.createElement("strong", null, "Como o score funciona"),
+                Spicetify.React.createElement("p", null, "Cada musica tem um score de -10 a +10 que muda conforme seu comportamento: ouvir ate o fim sobe, pular desce, mandar pra fila da prioridade. Musicas amadas aparecem mais no shuffle, as evitadas ficam raras (mas nunca somem de vez).")
+            ),
+
+            Spicetify.React.createElement("div", { className: "as-actions" },
+                Spicetify.React.createElement("button", {
+                    className: "as-primary",
+                    onClick: function() {
+                        settings.seenWelcome = true;
+                        saveSettings();
+                        Spicetify.PopupModal.hide();
+                    }
+                }, "Entendi, bora"),
+                Spicetify.React.createElement("button", {
+                    className: "as-secondary",
+                    onClick: function() { Spicetify.PopupModal.hide(); }
+                }, "Depois vejo")
+            )
+        );
+
+        Spicetify.PopupModal.display({ title: "Adaptive Shuffle", content: content, isLarge: true });
+    }
+
     // --- CSS global: bordas redondas no modal, sem bordas nos botoes ---
     (function() {
         var s = document.createElement("style");
@@ -347,75 +414,112 @@
         document.body.appendChild(s);
     })();
 
+    function closeActionPanel() {
+        var panel = document.getElementById("as-actionpanel");
+        if (panel) { panel.remove(); }
+        document.removeEventListener("click", onDocClickActionPanel);
+        document.removeEventListener("keydown", onEscActionPanel);
+    }
+
+    function onDocClickActionPanel(e) {
+        var panel = document.getElementById("as-actionpanel");
+        if (panel && !panel.contains(e.target)) closeActionPanel();
+    }
+
+    function onEscActionPanel(e) {
+        if (e.key === "Escape") closeActionPanel();
+    }
+
+    function openActionPanel() {
+        var panel = document.getElementById("as-actionpanel");
+        if (panel) { closeActionPanel(); return; }
+
+        var uri = getCurrentTrackUri();
+        var name = getCurrentTrackName() || (uri ? uri.split(":").pop() : "?");
+        var tObj = uri ? tracks[uri] : null;
+
+        var rect;
+        try { rect = btnShuffle.element.getBoundingClientRect(); } catch(e) { return; }
+
+        panel = document.createElement("div");
+        panel.id = "as-actionpanel";
+        panel.className = "as-actionpanel";
+        var style = panel.style;
+        style.position = "fixed";
+        style.bottom = (window.innerHeight - rect.top + 8) + "px";
+        style.right = (window.innerWidth - rect.right) + "px";
+        style.width = "230px";
+        style.background = "#181818";
+        style.borderRadius = "12px";
+        style.boxShadow = "0 4px 24px rgba(0,0,0,.6)";
+        style.padding = "6px 0";
+        style.zIndex = "99999";
+        style.fontFamily = "var(--glue-font-family,CircularSp,spotify-circular,sans-serif)";
+        style.border = "1px solid rgba(255,255,255,0.08)";
+
+        function item(label, action) {
+            var el = document.createElement("div");
+            el.className = "as-actionpanel-item";
+            el.textContent = label;
+            el.style.cssText = "padding:10px 16px;cursor:pointer;font-size:14px;color:var(--spice-text);white-space:nowrap;";
+            el.addEventListener("mouseenter", function() { el.style.background = "rgba(255,255,255,0.1)"; });
+            el.addEventListener("mouseleave", function() { el.style.background = ""; });
+            el.addEventListener("click", function() { closeActionPanel(); action(); });
+            return el;
+        }
+
+        panel.appendChild(item("Embaralhar agora", adaptiveReshuffleCurrentQueue));
+
+        if (uri) {
+            panel.appendChild(item("Turbinar esta faixa", function() {
+                var t = getTrack(uri);
+                t.s = Math.min(t.s + 3, agg().clamp);
+                t.pk++;
+                t.t = Date.now();
+                if (!t.n) t.n = name;
+                saveTracks();
+                notify("Turbinada! Score " + t.s.toFixed(0));
+            }));
+            panel.appendChild(item("Evitar esta faixa", function() {
+                var t = getTrack(uri);
+                t.s = Math.max(t.s - 3, -agg().clamp);
+                t.sk++;
+                t.t = Date.now();
+                if (!t.n) t.n = name;
+                saveTracks();
+                notify("Evitada! Score " + t.s.toFixed(0));
+            }));
+            panel.appendChild(item("Ver score desta faixa", function() {
+                var s = tObj ? tObj.s.toFixed(0) : "?";
+                notify(name + "  Score:" + s + "  p:" + (tObj ? tObj.p : 0) + " s:" + (tObj ? tObj.sk : 0));
+            }));
+            panel.appendChild(item("Resetar esta faixa", function() {
+                var t = getTrack(uri);
+                t.s = 0; t.p = 0; t.sk = 0; t.pk = 0; t.q = 0;
+                t.t = Date.now();
+                saveTracks();
+                notify("Faixa resetada! Score 0");
+            }));
+        }
+
+        panel.appendChild(item("Configuracoes", function() { try { openSettings(); } catch(e) { notify("Erro: " + e); } }));
+        panel.appendChild(item("Como funciona", openWelcome));
+
+        document.body.appendChild(panel);
+
+        setTimeout(function() {
+            document.addEventListener("click", onDocClickActionPanel);
+            document.addEventListener("keydown", onEscActionPanel);
+        }, 0);
+    }
+
     var btnShuffle = new Spicetify.Playbar.Button(
         "Adaptive Shuffle",
         "shuffle",
-        function() { adaptiveReshuffleCurrentQueue(); },
+        openActionPanel,
         false, false
     );
     btnShuffle.register();
-
-    var btnScore = new Spicetify.Playbar.Button(
-        "Score",
-        "enhance",
-        function() {
-            var uri = getCurrentTrackUri();
-            if (!uri) { notify("Nenhuma musica"); return; }
-            var t = tracks[uri];
-            var name = getCurrentTrackName() || uri.split(":").pop() || "?";
-            var s = t ? t.s.toFixed(0) : "?";
-            notify(name + "  Score:" + s + "  p:" + (t?t.p:0) + " s:" + (t?t.sk:0));
-        },
-        false, false
-    );
-    btnScore.register();
-
-    var btnBoost = new Spicetify.Playbar.Button(
-        "Turbinar",
-        "heart-active",
-        function() {
-            var uri = getCurrentTrackUri();
-            if (!uri) { notify("Nenhuma musica"); return; }
-            var t = getTrack(uri);
-            t.s = Math.min(t.s + 3, agg().clamp);
-            t.pk++;
-            t.t = Date.now();
-            if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
-            saveTracks();
-            notify("Turbinada! Score " + t.s.toFixed(0));
-        },
-        false, false
-    );
-    btnBoost.register();
-    btnBoost.element.style.border = "none";
-    btnBoost.element.style.outline = "none";
-    btnBoost.element.style.boxShadow = "none";
-
-    var btnAvoid = new Spicetify.Playbar.Button(
-        "Evitar",
-        "block",
-        function() {
-            var uri = getCurrentTrackUri();
-            if (!uri) { notify("Nenhuma musica"); return; }
-            var t = getTrack(uri);
-            t.s = Math.max(t.s - 3, -agg().clamp);
-            t.sk++;
-            t.t = Date.now();
-            if (!t.n) t.n = getCurrentTrackName() || uri.split(":").pop() || "";
-            saveTracks();
-            notify("Evitada! Score " + t.s.toFixed(0));
-        },
-        false, false
-    );
-    btnAvoid.register();
-
-    var btnConfig = new Spicetify.Playbar.Button(
-        "Config",
-        '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M7.249 2.506a.75.75 0 0 1 1.502 0v.51a3.5 3.5 0 0 1 1.198.496l.367-.367a.75.75 0 1 1 1.06 1.06l-.367.367a3.5 3.5 0 0 1 .496 1.198h.51a.75.75 0 0 1 0 1.502h-.51a3.5 3.5 0 0 1-.496 1.198l.367.367a.75.75 0 1 1-1.06 1.06l-.367-.367a3.5 3.5 0 0 1-1.198.496v.51a.75.75 0 0 1-1.502 0v-.51a3.5 3.5 0 0 1-1.198-.496l-.367.367a.75.75 0 0 1-1.06-1.06l.367-.367a3.5 3.5 0 0 1-.496-1.198h-.51a.75.75 0 0 1 0-1.502h.51a3.5 3.5 0 0 1 .496-1.198l-.367-.367a.75.75 0 0 1 1.06-1.06l.367.367a3.5 3.5 0 0 1 1.198-.496V2.506zM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>',
-        function() { try { openSettings(); } catch(e) { notify("Erro: " + e); } },
-        false, false
-    );
-    btnConfig.register();
 
     // --- UI: CONTEXT MENU (playlist/album/artist only - known working) ---
 
@@ -553,6 +657,47 @@
                 )
             ),
 
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Shuffle automatico: " + (settings.autoShuffle ? "LIGADO" : "DESLIGADO")),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("button", {
+                        className: "as-btn",
+                        onClick: function() {
+                            settings.autoShuffle = !settings.autoShuffle;
+                            saveSettings();
+                            Spicetify.PopupModal.hide();
+                            notify("AutoShuffle " + (settings.autoShuffle ? "LIGADO" : "DESLIGADO"));
+                            if (settings.autoShuffle) { maybeAutoShuffle(); }
+                            openSettings();
+                        }
+                    }, settings.autoShuffle ? "Desligar" : "Ligar")
+                )
+            ),
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Reordenar quando faltarem menos de"),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("input", {
+                        type: "number",
+                        min: "1",
+                        max: "20",
+                        value: settings.autoShuffleThreshold,
+                        style: {
+                            width: "48px", height: "32px", borderRadius: "6px", border: "0",
+                            background: "var(--spice-card)", color: "var(--spice-text)",
+                            textAlign: "center", fontSize: "14px"
+                        },
+                        onChange: function(e) {
+                            var v = parseInt(e.target.value, 10);
+                            if (isNaN(v) || v < 1) v = 1;
+                            if (v > 20) v = 20;
+                            settings.autoShuffleThreshold = v;
+                            saveSettings();
+                        }
+                    })
+                ),
+                Spicetify.React.createElement("span", { style: { marginLeft: "6px", color: "var(--spice-subtext)" } }, "faixas")
+            ),
+
             Spicetify.React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Estatisticas"),
             Spicetify.React.createElement("hr", { className: "as-divider" }),
             Spicetify.React.createElement("div", { className: "as-stat" }, "Faixas conhecidas: " + count),
@@ -561,11 +706,20 @@
             Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "8px" } }, "Mais evitadas (top 15)"),
             Spicetify.React.createElement("div", { className: "as-list-scroll" }, topAvo),
             Spicetify.React.createElement("div", { className: "as-stat", style: { marginTop: "6px", fontSize: "12px" } },
-                "Dica: use os botoes na barra do player para turbinar/evitar/ver score da musica tocando"
+                "Dica: clique no botao Adaptive Shuffle na barra do player para turbinar, evitar ou ver score da musica"
             ),
 
             Spicetify.React.createElement("h3", { style: { color: "var(--spice-text)", marginTop: "16px" } }, "Acoes"),
             Spicetify.React.createElement("hr", { className: "as-divider" }),
+            Spicetify.React.createElement("div", { className: "as-row" },
+                Spicetify.React.createElement("span", { className: "as-label" }, "Ver introducao de boas-vindas"),
+                Spicetify.React.createElement("div", { className: "as-action" },
+                    Spicetify.React.createElement("button", {
+                        className: "as-btn",
+                        onClick: function() { Spicetify.PopupModal.hide(); openWelcome(); }
+                    }, "Ver intro")
+                )
+            ),
             Spicetify.React.createElement("div", { className: "as-row" },
                 Spicetify.React.createElement("span", { className: "as-label" }, "Apagar tudo e comecar do zero"),
                 Spicetify.React.createElement("div", { className: "as-action" },
@@ -636,6 +790,8 @@
         } catch (e) {}
     };
     init();
+
+    if (!settings.seenWelcome) { setTimeout(openWelcome, 1200); }
 
     console.log("[Adaptive Shuffle v" + VERSION + "] carregado. " + Object.keys(tracks).length + " faixas.");
 })();

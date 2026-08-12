@@ -12,18 +12,22 @@ Tudo o que ele aprende fica salvo **localmente** no Spotify (LocalStorage do seu
 
 ## Como usar no dia a dia
 
-1. Use o Spotify normalmente. A extensão aprende sozinha em background.
-2. Quando quiser o shuffle inteligente, faça uma das opções:
-   - **Clique no botão ✨ `Adaptive Shuffle`** na barra do player → reordena a fila atual sem parar a música.
-   - **Clique com o direito numa playlist/álbum/artista → `Tocar com Adaptive Shuffle`**.
-3. Se ele errar o gosto numa música, **clique com o direito nela**:
-   - `Adaptive Shuffle: Turbinar ⭐` — força ela a tocar mais.
-   - `Adaptive Shuffle: Evitar 🙅` — força ela a sumir.
-   - `Adaptive Shuffle: Resetar 🔄` — apaga o que ele aprendeu só dessa faixa.
-4. **Menu do Spicetify (× no topo) → `Adaptive Shuffle`** abre as **configurações**:
+**Na primeira instalacao, uma tela de boas-vindas aparece explicando como tudo funciona.** Voce pode revê-la a qualquer momento pelo botao "Como funciona" no painel de acoes ou "Ver intro" nas configuracoes.
+
+1. Use o Spotify normalmente. A extensao aprende sozinha em background.
+2. Quando quiser o shuffle inteligente, clique no **botao unico** `Adaptive Shuffle` na barra do player. Abre um painel com todas as opcoes:
+   - **Embaralhar agora** — reordena a fila atual sem parar a musica.
+   - **Turbinar esta faixa** / **Evitar esta faixa** — ajusta o score na hora.
+   - **Ver score desta faixa** — mostra o score, plays e skips.
+   - **Resetar esta faixa** — apaga o que ele aprendeu dessa musica especifica.
+   - **Configuracoes** / **Como funciona** — abre o menu.
+3. **Clique com o direito numa playlist/album/artista → `Tocar com Adaptive Shuffle`** tambem funciona.
+4. **Menu do Spicetify (x no topo) → `Adaptive Shuffle`** abre as **configuracoes**:
    - Ligar/desligar o aprendizado.
    - Ajustar agressividade (Leve / Normal / Intenso).
+   - **Shuffle automatico** — quando ligado, reordena a fila automaticamente quando estiver acabando (padrao: menos de 3 faixas). Silencioso, sem notificacoes.
    - Ver suas **mais amadas** e **mais evitadas** com a barrinha de score.
+   - Ver a introducao de boas-vindas novamente.
    - Apagar tudo e começar do zero.
 
 > 💡 Quanto mais você usa, mais ele acerta. Nos primeiros dias ele ainda está aprendendo.
@@ -122,13 +126,13 @@ npm test        # ou: node --test tests/logic.test.js
 Os testes carregam a extensão inteira num ambiente Spicetify mockado e validam: score, clamp, classificação de skip/play, shuffle ponderado, persistência, integração com a fila.
 
 ### Debug no Spotify
-Abra o DevTools (Cmd+Option+I no macOS / Ctrl+Shift+I no Windows) e use o objeto exposed:
+Abra o DevTools (Cmd+Option+I no macOS / Ctrl+Shift+I no Windows) e use o objeto exposto:
 ```js
 AdaptiveShuffle.tracks               // tudo que aprendeu
 AdaptiveShuffle.getTrack("spotify:track:ID")
-AdaptiveShuffle.reshuffle()          // reordena a fila agora
+AdaptiveShuffle.reshuffle()          // reordena a fila agora (mesmo do botao Embaralhar agora)
 AdaptiveShuffle.openSettings()
-AdaptiveShuffle._resetTracking()     // re-sincroniza o tracker com a música atual
+AdaptiveShuffle._resetTracking()     // re-sincroniza o tracker com a musica atual
 ```
 
 ---

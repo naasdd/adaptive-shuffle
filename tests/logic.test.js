@@ -18,10 +18,18 @@ function loadExtension(env) {
     // Timers inertes: a extensão chama setInterval p/ o poll do tracker, mas no teste
     // não queremos manter o event loop do Node vivo (faria o runner travar).
     const noop = () => 0;
+    const docMock = {
+        createElement: function() { return { id: "", style: {}, textContent: "", className: "", appendChild: function() {}, remove: function() {}, getBoundingClientRect: function() { return { left: 0, top: 0, bottom: 0, right: 0, width: 0, height: 0 }; }, addEventListener: function() {}, removeEventListener: function() {}, contains: function() { return false; } }; },
+        getElementById: function() { return null; },
+        removeEventListener: function() {},
+        addEventListener: function() {},
+        body: { appendChild: function() {} },
+    };
     const context = vm.createContext({
         window: {},
         console,
         alert: () => {},           // mock do alert nativo do browser
+        document: docMock,
         setTimeout: (cb, ms) => { try { cb(); } catch (e) {} return 1; },
         clearTimeout: noop,
         setInterval: noop,        // inert: não agenda nada
@@ -259,4 +267,53 @@ test("persistencia: score sobrevive a um 'restart' (reload da extensão)", () =>
     const api2 = loadExtension(env2);
     const sDepois = api2.getTrack("t:sobrevive").s;
     assert.strictEqual(sDepois, sAntes, "score deve ser igual apos reload");
+});
+
+// ============================================================
+// AUTO SHUFFLE
+// ============================================================
+
+test("autoShuffle: desligado por padrao nos defaults", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    assert.strictEqual(api.settings.autoShuffle, false, "autoShuffle deve comecar desligado");
+    assert.ok(api.settings.autoShuffleThreshold >= 1, "threshold deve ser >= 1");
+});
+
+test("autoShuffle off: songchange NAO reordena a fila", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    api.settings.autoShuffle = false;
+    api.settings.autoShuffleThreshold = 3;
+    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
+    env.resetSetQueueCalls();
+    env.emitSongChange("t:current", 100000);
+    assert.strictEqual(env.setQueueCalls().length, 0, "nao deve chamar setQueue com autoShuffle desligado");
+});
+
+test("autoShuffle on + fila abaixo do threshold: reordena no songchange", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    api.settings.autoShuffle = true;
+    api.settings.autoShuffleThreshold = 3;
+    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
+    env.resetSetQueueCalls();
+    env.emitSongChange("t:current", 100000);
+    const calls = env.setQueueCalls();
+    assert.strictEqual(calls.length, 1, "deve chamar setQueue 1x");
+    const uris = calls[0].nextTracks.map((t) => t.contextTrack.uri);
+    assert.ok(uris.includes("t:a"), "deve conter t:a");
+    assert.ok(uris.includes("t:b"), "deve conter t:b");
+    assert.strictEqual(uris.length, 3, "2 faixas + 1 delimiter");
+});
+
+test("autoShuffle on + fila >= threshold: NAO reordena", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    api.settings.autoShuffle = true;
+    api.settings.autoShuffleThreshold = 3;
+    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }, { uri: "t:c" }, { uri: "t:d" }];
+    env.resetSetQueueCalls();
+    env.emitSongChange("t:current", 100000);
+    assert.strictEqual(env.setQueueCalls().length, 0, "nao deve reordenar quando fila >= threshold");
 });

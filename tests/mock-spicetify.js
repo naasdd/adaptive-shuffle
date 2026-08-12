@@ -81,7 +81,7 @@ function buildMockSpicetify() {
         Playbar: { Button: function (label, icon, onClick, disabled, active) {
             this.label = label; this.icon = icon; this.onClick = onClick;
             this.disabled = disabled; this.active = active;
-            this.element = {}; // HTML element mock
+            this.element = { getBoundingClientRect: function() { return { left: 0, top: 0, bottom: 0, width: 0, height: 0, right: 0 }; } };
             this.register = () => {}; this.deregister = () => {};
         }},
         ContextMenu: { Item: function (name, onClick, shouldAdd, icon) {
