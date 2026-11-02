@@ -1,36 +1,74 @@
 # Adaptive Shuffle
 
-Extensão para o [Spicetify](https://spicetify.app) que cria um **shuffle inteligente** pro Spotify. Ela **aprende seu comportamento** com cada música:
+Extensão para o [Spicetify](https://spicetify.app) que cria um **shuffle inteligente** pro Spotify. Ela **aprende o seu gosto** enquanto você ouve e monta a fila tocando mais o que você curte:
 
-- 🎧 **Música que você ouve até o fim** → passa a tocar mais.
-- 🙆 **Música que você sempre pula** → some (fica rara, nunca é excluída pra sempre).
-- ⭐ **Música que você escolhe / manda pra fila** → ganha prioridade.
+- 🎧 **Ouviu até o fim, pôs na fila, escolheu tocar, curtiu (♥)** → a música passa a aparecer mais.
+- ⏭️ **Pulou logo no começo várias vezes** → ela fica rara (nunca some de vez, seu gosto pode mudar).
+- 🎚️ **Você tem a palavra final**: turbine ou evite qualquer faixa na hora.
 
-Tudo o que ele aprende fica salvo **localmente** no Spotify (LocalStorage do seu computador). Nada é enviado pra fora. Funciona no **Windows e no macOS/Linux**.
+Tudo fica salvo **só no seu computador** (LocalStorage do Spotify). Funciona no **Windows e no macOS/Linux**.
 
 ---
 
-## Como usar no dia a dia
+## Como usar
 
-**Na primeira instalacao, uma tela de boas-vindas aparece explicando como tudo funciona.** Voce pode revê-la a qualquer momento pelo botao "Como funciona" no painel de acoes ou "Ver intro" nas configuracoes.
+Na primeira vez, aparece uma tela de boas-vindas explicando tudo (dá pra rever em **Como funciona**).
 
-1. Use o Spotify normalmente. A extensao aprende sozinha em background.
-2. Quando quiser o shuffle inteligente, clique no **botao unico** `Adaptive Shuffle` na barra do player. Abre um painel com todas as opcoes:
-   - **Embaralhar agora** — reordena a fila atual sem parar a musica.
-   - **Turbinar esta faixa** / **Evitar esta faixa** — ajusta o score na hora (+10 / −10).
-   - **Ver score desta faixa** — mostra o score, plays e skips.
-   - **Resetar esta faixa** — apaga o que ele aprendeu dessa musica especifica.
-   - **Configuracoes** / **Como funciona** — abre o menu.
-3. **Clique com o direito numa playlist/album/artista → `Tocar com Adaptive Shuffle`** tambem funciona.
-4. **Menu do Spicetify (x no topo) → `Adaptive Shuffle`** abre as **configuracoes**:
-   - Ligar/desligar o aprendizado.
-   - Ajustar agressividade (Leve / Normal / Intenso).
-   - **Shuffle automatico** — quando ligado, reordena a fila automaticamente quando estiver acabando (padrao: menos de 3 faixas). Silencioso, sem notificacoes.
-   - Ver suas **mais amadas** e **mais evitadas** com a barrinha de score.
-   - Ver a introducao de boas-vindas novamente.
-   - Apagar tudo e começar do zero.
+1. **Use o Spotify normalmente.** A extensão aprende sozinha em background.
+2. **Botão ✦ na barra do player** (lado direito, perto da letra/fila) abre o painel:
+   - a música atual com capa, **score** e o porquê (“Favorita · 5× até o fim · 1 pulo”);
+   - **Turbinar** / **Evitar**: ajuste manual que nunca é esquecido (clicar no oposto volta pro neutro);
+   - **Embaralhar a fila agora**: reordena a playlist/álbum/Curtidas **inteira** pelo seu gosto, sem parar a música e mantendo a sua fila manual na frente;
+   - **Shuffle automático** (liga/desliga direto no painel);
+   - **Esquecer o que aprendi desta faixa**, **Configurações e estatísticas**, **Como funciona**.
+3. **Botão direito numa playlist, álbum, artista ou Músicas Curtidas → `Tocar com Adaptive Shuffle`.**
+4. **Botão direito em qualquer faixa (ou várias) → `Adaptive Shuffle` → Turbinar / Evitar / Esquecer.**
 
-> 💡 Quanto mais você usa, mais ele acerta. Nos primeiros dias ele ainda está aprendendo.
+### Configurações e estatísticas
+
+- **Intensidade** (Leve / Normal / Intenso): o quanto o gosto pesa no sorteio. A tela mostra quantas vezes mais uma favorita tende a vir antes de uma música neutra.
+- **Shuffle automático**: com o aleatório do Spotify ligado, o Adaptive Shuffle assume a ordem ao começar uma playlist/álbum/Curtidas, quando você liga o aleatório e quando a fila está acabando.
+- **Evitar repetir o que tocou há pouco**: o que você ouviu nas últimas 24 h vai mais pro fim da fila.
+- **Espalhar artistas**: evita o mesmo artista duas vezes seguidas.
+- **Aprender com o que eu ouço**: desligado, continua embaralhando com o que já sabe, sem aprender nada novo.
+- **Suas músicas**: mais amadas, mais evitadas, busca por música/artista e a aba **Atividade**, que mostra o que ele aprendeu e quando (“Pulou no começo · Manchild · +46 → +38 · há 5 min”). Dá pra turbinar/evitar/esquecer direto na lista.
+- **Seus dados**: exportar/importar backup (JSON) e apagar tudo (pede confirmação).
+
+---
+
+## Como o algoritmo funciona
+
+### Score
+Cada música acumula **evidência de que você gosta** (L) e **de que não gosta** (D):
+
+| Evento | Evidência |
+|---|---|
+| Ouviu ≥ 80% (ou até o fim) | L + 1 |
+| Ouviu entre 25% e 80% | L + até 0,5 (proporcional) |
+| Escolheu tocar (clicou numa faixa fora da ordem, voltou pra anterior) | L + 0,7 |
+| Pôs na fila manualmente | L + 1 (ou + 0,3 por faixa se adicionou 5+ de uma vez, ex.: álbum inteiro) |
+| Pulou entre 10% e 25% | D + 0,6 |
+| Pulou antes de 10% | D + 1 |
+| Ouviu menos de 3 s | nada (você estava navegando) |
+
+A preferência é **`(L − D) / (L + D + 3)`**, entre −1 e +1 (o score na tela é isso × 100). O `+3` funciona como "dúvida inicial": com poucas observações o score fica perto de zero, então **um pulo isolado quase não pesa**, e é preciso um padrão pra música subir ou cair muito.
+
+Ajustes em cima disso:
+
+- **Curtidas**: música nas suas Curtidas ganha L + 2,5 fixo, então resiste a pulos ocasionais.
+- **Turbinar/Evitar**: cada clique soma ±20 pontos (±0,2) direto na preferência (até ±5 cliques) e não decai.
+- **Esquecimento**: a evidência perde metade do peso a cada **120 dias** sem ser reforçada, então uma música evitada pode "voltar".
+- **Pulos em sequência** (procurando alguma coisa) pesam cada vez menos: o 2º vale 2/3, o 3º vale metade…
+- **Contexto do pulo**: trocar de faixa porque escolheu outra música ou outra playlist pune pela metade. Trocas feitas pela própria extensão não punem, e música que já estava no meio quando o app abriu também não.
+- **O que conta é o tempo realmente ouvido**: arrastar a barra pra frente ou deixar pausado não vira "ouviu inteira". Repeat de uma faixa só conta cada volta.
+
+### Mesma música, várias versões
+O Spotify tem a mesma música em várias URIs (single, álbum, remaster, versão regional). A extensão identifica a música por **título + artista** normalizados (ignorando "Remaster", "feat.", "with", acentos…) e **junta o aprendizado** de todas as versões. "Slowed", "Live", "Acoustic" etc. continuam sendo músicas diferentes.
+
+### Embaralhamento
+O peso de cada faixa no sorteio é **`e^(força × preferência)`**, com força 1 / 2 / 3 (Leve / Normal / Intenso). No Normal, uma favorita (+80) tem ~5× mais chance de vir antes que uma neutra; no Intenso, ~11×. A ordem é sorteada sem reposição ([Efraimidis–Spirakis](https://en.wikipedia.org/wiki/Reservoir_sampling#Algorithm_A-Res)), então **ninguém é excluído**: só fica mais pro começo ou mais pro fim.
+
+Extras: músicas sem histórico ganham um leve empurrão (pra serem descobertas), o que tocou nas últimas 24 h fica mais pro fim, e o mesmo artista não aparece duas vezes seguidas quando dá pra evitar.
 
 ---
 
@@ -38,23 +76,27 @@ Tudo o que ele aprende fica salvo **localmente** no Spotify (LocalStorage do seu
 
 Você precisa do Spicetify instalado: <https://spicetify.app/docs/getting-started>
 
-### Opção A — Script automático (recomendado)
+### Opção A: Marketplace do Spicetify (mais fácil)
+
+1. No Spotify, abra o **Marketplace** (ícone de carrinho no topo).
+2. Na aba **Extensions**, busque **Adaptive Shuffle** (ou ordene por "atualizadas recentemente").
+3. Clique em **Install** e recarregue o Spotify.
+
+### Opção B: script automático
 
 **macOS / Linux:**
 ```bash
-cd teste-shuffle
 ./install-macos.sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-cd teste-shuffle
 .\install-windows.ps1
 ```
 
 O script copia a extensão pra pasta do Spicetify, habilita e aplica. Reinicie o Spotify depois.
 
-### Opção B — Manual (passo a passo)
+### Opção C: manual
 
 1. Copie `adaptive-shuffle.js` para a pasta de extensões do Spicetify:
    - **macOS/Linux:** `~/.config/spicetify/Extensions/`
@@ -66,6 +108,9 @@ O script copia a extensão pra pasta do Spicetify, habilita e aplica. Reinicie o
    ```
 3. Reinicie o Spotify.
 
+### Atualizando da v1
+Na primeira vez que a v2 abre, ela converte o que a v1 aprendeu (plays, pulos, fila) pro modelo novo e, em background, descobre título/artista de cada faixa pra juntar duplicatas e marcar as Curtidas. O score antigo é descartado (ele estava distorcido por bugs da v1), mas o histórico de plays e pulos é mantido. Os dados da v1 continuam intactos em `adaptiveShuffle:tracks` como backup.
+
 ---
 
 ## Desinstalação
@@ -73,89 +118,51 @@ O script copia a extensão pra pasta do Spicetify, habilita e aplica. Reinicie o
 **macOS / Linux:** `./uninstall-macos.sh`
 **Windows:** `.\uninstall-windows.ps1`
 
-Ou manual:
-```bash
-spicetify config extensions adaptive-shuffle.js --disable   # ou edite o config e remova o nome
-spicetify apply
-```
-e apague o arquivo da pasta `Extensions/`.
-
-Os dados aprendidos ficam no LocalStorage do Spotify. Pra apagar: menu do Spicetify → Adaptive Shuffle → **"Começar do zero"**.
-
----
-
-## Como o algoritmo funciona (resumo)
-
-Cada faixa recebe um **score** entre −35 e +35 (clamp), com **decaimento** de 0.95 (comportamento recente vale mais, mas o histórico acumulado pesa):
-
-| Evento | Efeito (modo Normal) |
-|---|---|
-| Ouviu ≥80% da música | `+3` |
-| Ouviu 25–80% (parcial) | crédito proporcional (até `+3`) |
-| Pulou antes de 25% | `−2` |
-| Pulou antes de 10% (skip pesado) | `−3` |
-| Adicionou à fila manualmente | `+3` |
-| Turbinar / Evitar pelo painel | `+10` / `−10` |
-
-No shuffle adaptativo o **peso** de cada faixa é `2^(score/2)` — uma faixa amada (score +9) fica ~**22x** mais provável no topo; uma enjoada (score −9) fica ~**22x** mais rara, mas **nunca é excluída** (seu gosto pode mudar).
-
-Você pode ajustar a **agressividade** (Leve/Normal/Intenso) nas configurações para os pesos serem mais ou menos forte.
+Os dados aprendidos continuam no LocalStorage do Spotify. Pra apagar: botão ✦ → Configurações → **Apagar tudo**.
 
 ---
 
 ## Para desenvolvedores
-
-Os arquivos do projeto:
 
 ```
 teste-shuffle/
 ├── adaptive-shuffle.js          ← a extensão (autocontida, sem dependências)
 ├── tests/
 │   ├── logic.test.js            ← testes (node:test)
-│   └── mock-spicetify.js        ← mock do Spicetify p/ teste de fumaça
+│   └── mock-spicetify.js        ← Spicetify simulado: player com relógio, fila, APIs
 ├── package.json                 ← só o script de teste
 ├── manifest.json                ← p/ publicar no Marketplace do Spicetify
-├── install-macos.sh / uninstall-macos.sh
-├── install-windows.ps1 / uninstall-windows.ps1
+├── install-*/uninstall-*        ← scripts de instalação
 └── README.md
 ```
 
-### Rodar os testes
+### Testes
 ```bash
-npm test        # ou: node --test tests/logic.test.js
+npm test
 ```
-Os testes carregam a extensão inteira num ambiente Spicetify mockado e validam: score, clamp, classificação de skip/play, shuffle ponderado, persistência, integração com a fila.
+Carregam a extensão inteira num Spicetify simulado, com relógio controlável, e cobrem: modelo de score (pulo isolado, Curtidas, decaimento, turbinar), identidade/duplicatas, tracker (seek, pausa, retomada, repeat, pulos em sequência, escolha fora da ordem, trocas da própria extensão), fila (playlist inteira, fila manual preservada, rádio, Curtidas), shuffle automático, migração da v1 e persistência.
 
 ### Debug no Spotify
-Abra o DevTools (Cmd+Option+I no macOS / Ctrl+Shift+I no Windows) e use o objeto exposto:
+Abra o DevTools (`spicetify enable-devtools`) e use o objeto exposto:
 ```js
-AdaptiveShuffle.tracks               // tudo que aprendeu
-AdaptiveShuffle.getTrack("spotify:track:ID")
-AdaptiveShuffle.reshuffle()          // reordena a fila agora (mesmo do botao Embaralhar agora)
-AdaptiveShuffle.openSettings()
-AdaptiveShuffle._resetTracking()     // re-sincroniza o tracker com a musica atual
+AdaptiveShuffle.debug = true                     // loga cada evento aprendido no console
+AdaptiveShuffle.store                            // tudo que aprendeu (songs, uris, log)
+AdaptiveShuffle.peekSong("spotify:track:ID")     // dados de uma faixa
+AdaptiveShuffle.scoreOf("spotify:track:ID")      // score de -100 a +100
+AdaptiveShuffle.reshuffle()                      // mesmo que "Embaralhar a fila agora"
+AdaptiveShuffle.backgroundMaintenance()          // reidentifica faixas e atualiza Curtidas
 ```
 
----
-
-## Publicar no Marketplace do Spicetify (opcional)
-
-A extensão já vem com `manifest.json` no formato exigido pelo Marketplace. Para publicar:
-
-1. Crie um **repositório público no GitHub** com todo o conteúdo desta pasta.
-2. Adicione o tópico do GitHub: **`spicetify-extensions`** (Settings → Topics).
-3. Adicione uma imagem `preview.png` na raiz (print do botão/modal).
-4. Envie um PR adicionando seu repositório em `spicetify/resources/data/extension.ts` do repo `spicetify/marketplace` (ou abra issue pedindo inclusão), conforme <https://github.com/spicetify/marketplace/wiki/Publishing-to-Marketplace>.
-
-Depois sua extensão aparece instalável com 1 clique.
+### Compatibilidade
+No Spotify 1.3.x o Spicetify (2.46) não encontra mais o container da barra do player. A extensão detecta isso e coloca o botão sozinha ao lado dos botões nativos.
 
 ---
 
 ## Privacidade
 
 - Todos os dados ficam **no seu computador** (LocalStorage do Spotify).
-- Nenhuma requisicao externa e feita; nenhum dado e enviado para lugar nenhum.
-- O armazenamento e limitado (~4000 faixas) com limpeza automatica (LRU).
+- A extensão só conversa com o próprio Spotify (pra ler playlists, Curtidas e nomes de faixas). Nada é enviado pra terceiros.
+- O armazenamento é limitado (6000 músicas) com limpeza automática das menos relevantes.
 
 ---
 

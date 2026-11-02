@@ -1,5 +1,6 @@
-// Mock do ambiente Spicetify para rodar a extensão em Node (teste de fumaça).
-// Simula o minimo necessario para adaptive-shuffle.js carregar sem erros.
+// Mock do ambiente Spicetify para rodar a extensão em Node.
+// Simula o Player (com relógio e posição controláveis), a fila do Spotify,
+// PlaylistAPI/LibraryAPI e o GraphQL usado pra descobrir título/artista.
 
 function createStore() {
     const data = {};
@@ -8,52 +9,99 @@ function createStore() {
         set: (k, v) => { data[k] = String(v); },
         remove: (k) => { delete data[k]; },
         clear: () => { for (const k of Object.keys(data)) delete data[k]; },
+        _data: data,
     };
 }
 
 class FakeEventTarget {
     constructor() { this.listeners = {}; }
-    addEventListener(type, cb) {
-        (this.listeners[type] = this.listeners[type] || []).push(cb);
-    }
+    addEventListener(type, cb) { (this.listeners[type] = this.listeners[type] || []).push(cb); }
     removeEventListener(type, cb) {
-        if (!this.listeners[type]) return;
-        this.listeners[type] = this.listeners[type].filter((f) => f !== cb);
+        if (this.listeners[type]) this.listeners[type] = this.listeners[type].filter((f) => f !== cb);
     }
-    dispatchEvent(ev) {
-        (this.listeners[ev && ev.type] || []).forEach((cb) => cb(ev));
-    }
+    dispatchEvent(ev) { (this.listeners[ev && ev.type] || []).forEach((cb) => cb(ev)); }
 }
 
-function buildMockSpicetify() {
+// Faixa de teste -> item no formato do Player.data / _queueState do Spotify
+function makeItem(t) {
+    return {
+        type: "track",
+        uri: t.uri,
+        name: t.name || "",
+        artists: t.artist ? [{ name: t.artist }] : [],
+        duration: { milliseconds: t.duration || 200000 },
+        provider: t.provider || "context",
+        images: [],
+        metadata: Object.assign(
+            { title: t.name || "", artist_name: t.artist || "", duration: String(t.duration || 200000) },
+            t.liked === undefined ? {} : { "collection.in_collection": t.liked ? "true" : "false" }
+        ),
+    };
+}
+function makeRaw(t, provider) {
+    return {
+        contextTrack: { uri: t.uri, uid: "uid-" + t.uri, metadata: { title: t.name || "", artist_name: t.artist || "" } },
+        removed: [], blocked: [], provider: provider || t.provider || "context",
+    };
+}
+
+function buildMockSpicetify(opts = {}) {
     const storage = createStore();
+    const clock = { t: opts.startTime || Date.UTC(2026, 10, 1, 12, 0, 0) };
+    const state = { pos: 0 };
+    const notifications = [];
+
     const player = Object.assign(new FakeEventTarget(), {
-        data: { item: { uri: "spotify:track:start" }, duration: 180000 },
-        getProgress: () => 0,
-        isPlaying: () => true,
-        getDuration: () => 180000,
-        next: () => {},
-        play: () => {},
-        pause: () => {},
+        data: null,
+        getProgress: () => state.pos,
+        getDuration: () => (player.data ? player.data.duration : 0),
+        isPlaying: () => !!(player.data && !player.data.isPaused),
+        next: () => { player._nextCalls = (player._nextCalls || 0) + 1; },
+        play: () => {}, pause: () => {},
+        origin: {},
+        _nextCalls: 0,
     });
 
-    const _queueState = { nextUp: [], queued: [], current: null };
+    // ---- fila ----
+    const _queueState = { current: null, queued: [], nextUp: [] };
+    const _queue = { nextTracks: [], prevTracks: [], queueRevision: "rev1" };
     let setQueueCalls = [];
+    const catalog = {}; // uri -> {name, artist}
+
+    function syncStateFromRaw() {
+        _queueState.queued = _queue.nextTracks.filter((t) => t.provider === "queue")
+            .map((t) => Object.assign(makeItem({ uri: t.contextTrack.uri, ...(catalog[t.contextTrack.uri] || {}) }), { provider: "queue" }));
+        _queueState.nextUp = _queue.nextTracks.filter((t) => t.provider !== "queue")
+            .map((t) => Object.assign(makeItem({ uri: t.contextTrack.uri, ...(catalog[t.contextTrack.uri] || {}) }), { provider: t.provider }));
+    }
+
     const _client = {
         setQueue: (arg) => {
             setQueueCalls.push(arg);
-            _queueState.queued = (arg.nextTracks || []).map((t) => t.contextTrack.uri);
+            _queue.nextTracks = arg.nextTracks.slice();
+            syncStateFromRaw();
         },
     };
     const PlayerAPI = {
-        _queue: { _queue: { prevTracks: [], queueRevision: "rev1" }, _client, _queueState },
+        _queue: { _queue, _client, _queueState },
         getState: () => ({ sessionId: "sess-1" }),
-        updateContext: () => {},
-        addToQueue: async () => {},
-        removeFromQueue: async () => {},
+        updateContext: (sid, ctx) => { PlayerAPI._lastContext = ctx; },
+        _lastContext: null,
     };
 
-    // Simple React mock com createElement funcional
+    const playlists = {}; // uri -> [tracks]
+    const liked = new Set();
+    const PlaylistAPI = {
+        getContents: async (uri) => {
+            if (!playlists[uri]) throw new Error("playlist desconhecida");
+            return { items: playlists[uri].map((t) => ({ uri: t.uri, name: t.name, artists: [{ name: t.artist }], isPlayable: true })) };
+        },
+    };
+    const LibraryAPI = {
+        contains: async (...uris) => uris.map((u) => liked.has(u)),
+        getTracks: async () => ({ items: [...liked].map((u) => ({ uri: u, name: (catalog[u] || {}).name, artists: [{ name: (catalog[u] || {}).artist }], isPlayable: true })) }),
+    };
+
     const React = {
         createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
         useState: (init) => [typeof init === "function" ? init() : init, () => {}],
@@ -62,63 +110,115 @@ function buildMockSpicetify() {
 
     const Spicetify = {
         Player: player,
-        Platform: { PlayerAPI },
+        Platform: { PlayerAPI, PlaylistAPI, LibraryAPI },
         LocalStorage: storage,
         React,
-        addToQueue: async () => {},
-        showNotification: () => {},
+        SVGIcons: {},
+        showNotification: (msg) => { notifications.push(msg); },
         URI: {
-            Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist", TRACK: "track" },
+            Type: { PLAYLIST: "playlist", PLAYLIST_V2: "playlist-v2", ALBUM: "album", ARTIST: "artist", TRACK: "track", COLLECTION: "collection" },
             fromString: (uri) => {
-                const id = uri.split(":").pop();
-                let type = "track";
-                if (uri.includes(":playlist:")) type = "playlist";
-                else if (uri.includes(":album:")) type = "album";
-                else if (uri.includes(":artist:")) type = "artist";
-                else if (uri.includes(":track:")) type = "track";
-                return { type, id, _base62Id: id };
+                const parts = uri.split(":");
+                let type = parts[1];
+                if (uri.includes(":collection")) type = "collection";
+                return { type, id: parts[parts.length - 1] };
             },
         },
-        GraphQL: { Definitions: {}, Request: async () => { throw new Error("no graphql"); } },
+        GraphQL: {
+            Definitions: { decorateContextTracks: "decorateContextTracks", queryAlbumTracks: "queryAlbumTracks" },
+            Request: async (def, vars) => {
+                if (def === "decorateContextTracks") {
+                    return { data: { tracks: vars.uris.filter((u) => catalog[u]).map((u) => ({ uri: u, name: catalog[u].name, artists: { items: [{ profile: { name: catalog[u].artist } }] } })) } };
+                }
+                throw new Error("sem graphql para " + def);
+            },
+        },
         Locale: { getLocale: () => "pt-BR" },
-        Playbar: { Button: function (label, icon, onClick, disabled, active) {
-            this.label = label; this.icon = icon; this.onClick = onClick;
-            this.disabled = disabled; this.active = active;
-            this.element = { getBoundingClientRect: function() { return { left: 0, top: 0, bottom: 0, width: 0, height: 0, right: 0 }; } };
-            this.register = () => {}; this.deregister = () => {};
-        }},
-        ContextMenu: { Item: function (name, onClick, shouldAdd, icon) {
-            this.name = name; this.onClick = onClick; this.shouldAdd = shouldAdd; this.icon = icon;
-            this.register = () => {};
-        }},
-        Menu: { Item: function (name, active, onClick, icon) {
-            this.name = name; this.active = active; this.onClick = onClick; this.icon = icon;
-            this.register = () => {};
-        }},
+        Playbar: {
+            Button: function (label, icon, onClick, disabled, active) {
+                this.label = label; this.icon = icon; this.onClick = onClick; this.disabled = disabled; this.active = active;
+                this.element = null;
+                this.register = () => {}; this.deregister = () => {};
+            },
+        },
+        ContextMenu: {
+            Item: function (name, onClick, shouldAdd, icon) {
+                this.name = name; this.onClick = onClick; this.shouldAdd = shouldAdd; this.icon = icon;
+                this.register = () => { registeredMenus.push(this); };
+            },
+            SubMenu: function (name, items, shouldAdd) {
+                this.name = name; this.items = items; this.shouldAdd = shouldAdd;
+                this.register = () => { registeredMenus.push(this); };
+            },
+        },
+        Menu: { Item: function () { this.register = () => {}; } },
         PopupModal: { display: () => {}, hide: () => {} },
     };
+    const registeredMenus = [];
 
     globalThis.Spicetify = Spicetify;
-    return {
-        Spicetify,
-        storage,
-        _queueState,
+
+    const env = {
+        Spicetify, storage, clock, state, notifications, catalog, playlists, liked, registeredMenus,
+        _queue, _queueState,
         setQueueCalls: () => setQueueCalls,
         resetSetQueueCalls: () => { setQueueCalls = []; },
-        // helpers para avancar "tocando"
-        advanceTo: (uri, duration = 180000, progress = 0) => {
-            player.data = { item: { uri }, duration };
-            player.getProgress = () => progress;
+
+        // Define a faixa atual SEM disparar songchange (estado inicial, antes de carregar a extensão)
+        initTrack(t, pos = 0, extra = {}) {
+            if (t.name) catalog[t.uri] = { name: t.name, artist: t.artist };
+            state.pos = pos;
+            player.data = Object.assign({
+                item: makeItem(t), duration: t.duration || 200000, isPaused: false, shuffle: false,
+                context: t.context ? { uri: t.context } : null,
+            }, extra);
+            _queueState.current = player.data.item;
         },
-        emitSongChange: (uri, duration) => {
-            player.data = { item: { uri }, duration };
+        // Troca de faixa como o Spotify faz: atualiza o estado e dispara songchange
+        changeTrack(t, extra = {}) {
+            const prevCtx = player.data && player.data.context;
+            const prevShuffle = player.data ? player.data.shuffle : false;
+            env.initTrack(t, 0, Object.assign({ context: t.context ? { uri: t.context } : prevCtx, shuffle: prevShuffle }, extra));
+            // a faixa que comecou sai do topo da fila
+            if (_queue.nextTracks.length && _queue.nextTracks[0].contextTrack.uri === t.uri) {
+                _queue.nextTracks.shift();
+                syncStateFromRaw();
+            }
             player.dispatchEvent({ type: "songchange", data: player.data });
         },
-        emitProgress: (ms) => {
-            player.getProgress = () => ms;
-            player.dispatchEvent({ type: "onprogress", data: ms });
+        // Avanca o relogio tocando: posicao anda junto, onprogress a cada `step` ms
+        play(ms, step = 1000) {
+            for (let done = 0; done < ms; done += step) {
+                const dt = Math.min(step, ms - done);
+                clock.t += dt;
+                state.pos += dt;
+                player.dispatchEvent({ type: "onprogress", data: state.pos });
+            }
+        },
+        seek(pos) {
+            state.pos = pos;
+            clock.t += 100;
+            player.dispatchEvent({ type: "onprogress", data: state.pos });
+        },
+        wait(ms) { clock.t += ms; },
+        pause() { player.data.isPaused = true; player.dispatchEvent({ type: "onplaypause", data: player.data }); },
+        resume() { player.data.isPaused = false; player.dispatchEvent({ type: "onplaypause", data: player.data }); },
+        setLiked(on) {
+            player.data.item.metadata["collection.in_collection"] = on ? "true" : "false";
+            if (on) liked.add(player.data.item.uri); else liked.delete(player.data.item.uri);
+        },
+        // Define a fila do Spotify: queued = fila manual, nextUp = resto do contexto
+        setQueue({ queued = [], nextUp = [] }) {
+            queued.concat(nextUp).forEach((t) => { if (t.name) catalog[t.uri] = { name: t.name, artist: t.artist }; });
+            _queue.nextTracks = queued.map((t) => makeRaw(t, "queue")).concat(nextUp.map((t) => makeRaw(t, t.provider || "context")));
+            syncStateFromRaw();
+        },
+        addPlaylist(uri, tracks) {
+            tracks.forEach((t) => { catalog[t.uri] = { name: t.name, artist: t.artist }; });
+            playlists[uri] = tracks;
         },
     };
+    return env;
 }
 
 module.exports = { buildMockSpicetify };

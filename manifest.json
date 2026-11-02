@@ -1,13 +1,13 @@
 [
   {
     "name": "Adaptive Shuffle",
-    "description": "Shuffle inteligente que aprende seu comportamento: musicas que vc ama tocam mais, as que vc sempre pula somem. Aprende sozinho com cada play/skip.",
+    "description": "Shuffle inteligente que aprende seu gosto: músicas que você ouve até o fim, curte ou põe na fila tocam mais; as que você sempre pula ficam raras. Turbine ou evite faixas na hora.",
     "preview": "preview.png",
     "main": "adaptive-shuffle.js",
     "readme": "README.md",
     "authors": [
-      { "name": "joseg" }
+      { "name": "naasdd", "url": "https://github.com/naasdd" }
     ],
-    "tags": ["shuffle", "queue", "adaptive", "smart", "recommendation"]
+    "tags": ["shuffle", "queue", "smart shuffle", "adaptive", "recommendation"]
   }
 ]

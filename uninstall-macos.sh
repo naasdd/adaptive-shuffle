@@ -24,4 +24,4 @@ spicetify config extensions "$NAME.js" || true
 spicetify apply
 echo "✅ Adaptive Shuffle desinstalado."
 echo "Os dados que ele aprendeu continuam no LocalStorage do Spotify."
-echo "Pra apagar tudo: menu do Spicetify → Adaptive Shuffle → \"Começar do zero\"."
+echo "Pra apagar tudo: botão Adaptive Shuffle → Configurações → \"Apagar tudo\"."

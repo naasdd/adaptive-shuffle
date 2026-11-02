@@ -29,7 +29,7 @@ if (-not $ExtDir) {
     $ExtDir = Join-Path $SpicetifyHome "Extensions"
 }
 
-Write-Host "📁 Pasta de extenções: $ExtDir"
+Write-Host "📁 Pasta de extensões: $ExtDir"
 New-Item -ItemType Directory -Force -Path $ExtDir | Out-Null
 Copy-Item $Src (Join-Path $ExtDir "$Name.js") -Force
 Write-Host "✔ Extensão copiada." -ForegroundColor Green
@@ -42,8 +42,8 @@ spicetify apply
 
 Write-Host ""
 Write-Host "✅ Pronto! Reinicie o Spotify e procure:" -ForegroundColor Green
-Write-Host "   • Um botão ✨ na barra do player"
+Write-Host "   • Um botão ✦ (shuffle com brilho) do lado direito da barra do player"
 Write-Host "   • `"Tocar com Adaptive Shuffle`" ao clicar com o direito numa playlist"
-Write-Host "   • `"Adaptive Shuffle`" no menu do Spicetify (configurações)"
+Write-Host "   • `"Adaptive Shuffle`" ao clicar com o direito numa faixa (turbinar/evitar)"
 Write-Host ""
-Write-Host "Para DESINSTALAR: .\uninstall.ps1"
+Write-Host "Para DESINSTALAR: .\uninstall-windows.ps1"

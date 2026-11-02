@@ -1,6 +1,6 @@
-// Testes da lógica do Adaptive Shuffle (score, classificação, shuffle ponderado)
-// + teste de fumaça que carrega a extensão inteira num Spicetify mockado.
-// Usa o test runner nativo do Node (node:test) -- zero dependências.
+// Testes do Adaptive Shuffle: modelo de score, tracker, identidade, migracao e fila.
+// Carrega a extensao inteira num Spicetify mockado (tests/mock-spicetify.js).
+// Usa o test runner nativo do Node (node:test) -- zero dependencias.
 
 const { test } = require("node:test");
 const assert = require("node:assert");
@@ -9,385 +9,581 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { buildMockSpicetify } = require("./mock-spicetify");
 
-// ============================================================
-// TESTE DE FUMAÇA: carrega a extensão inteira num ambiente mockado
-// ============================================================
+const CODE = fs.readFileSync(path.join(__dirname, "..", "adaptive-shuffle.js"), "utf8");
+const DAY = 86400000;
 
 function loadExtension(env) {
-    const code = fs.readFileSync(path.join(__dirname, "..", "adaptive-shuffle.js"), "utf8");
-    // Timers inertes: a extensão chama setInterval p/ o poll do tracker, mas no teste
-    // não queremos manter o event loop do Node vivo (faria o runner travar).
-    const noop = () => 0;
+    const clock = env.clock;
+    class FakeDate extends Date {
+        constructor(...args) { if (args.length) super(...args); else super(clock.t); }
+        static now() { return clock.t; }
+    }
+    const fakeNode = () => ({
+        id: "", style: {}, className: "", textContent: "", classList: { add() {}, remove() {}, toggle() {} },
+        setAttribute() {}, appendChild() {}, prepend() {}, remove() {}, addEventListener() {}, removeEventListener() {},
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+        contains: () => false, querySelector: () => null,
+    });
     const docMock = {
-        createElement: function() { return { id: "", style: {}, textContent: "", className: "", appendChild: function() {}, remove: function() {}, getBoundingClientRect: function() { return { left: 0, top: 0, bottom: 0, right: 0, width: 0, height: 0 }; }, addEventListener: function() {}, removeEventListener: function() {}, contains: function() { return false; } }; },
-        getElementById: function() { return null; },
-        removeEventListener: function() {},
-        addEventListener: function() {},
-        body: { appendChild: function() {} },
+        createElement: fakeNode, createTextNode: fakeNode,
+        getElementById: () => null, querySelector: () => null,
+        addEventListener() {}, removeEventListener() {},
+        head: fakeNode(), body: fakeNode(),
     };
     const context = vm.createContext({
         window: {},
-        console,
-        alert: () => {},           // mock do alert nativo do browser
+        console: { log() {}, warn() {}, error() {} },
         document: docMock,
-        setTimeout: (cb, ms) => { try { cb(); } catch (e) {} return 1; },
-        clearTimeout: noop,
-        setInterval: noop,        // inert: não agenda nada
-        clearInterval: noop,
-        Math, Date, JSON, Object, Array, Set, Map, Error,
+        // Timers: setTimeout executa na hora (debounce/atrasos viram sincronos); intervalos sao inertes
+        setTimeout: (cb) => { try { cb(); } catch (e) {} return 1; },
+        clearTimeout: () => {},
+        setInterval: () => 0,
+        clearInterval: () => {},
+        Date: FakeDate,
         Spicetify: env.Spicetify,
-        globalThis,
     });
-    vm.runInContext(code, context);
-    return context.window.AdaptiveShuffle;
+    vm.runInContext(CODE, context);
+    const api = context.window.AdaptiveShuffle;
+    if (api) api.settings.seenWelcome = true;
+    return api;
 }
 
-test("smoke: extensão carrega sem erros e expõe API publica", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    assert.ok(api, "AdaptiveShuffle deve ser exposto em window");
-    assert.strictEqual(typeof api.weightedShuffle, "function");
-    assert.strictEqual(typeof api.recordEvent, "function");
-    assert.strictEqual(typeof api.getTrack, "function");
-    assert.strictEqual(typeof api.reshuffle, "function");
-    assert.strictEqual(typeof api.playAdaptive, "function");
-});
+const settle = async (n = 5) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
-test("smoke: extensão persiste scores no LocalStorage mockado", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.recordEvent("spotify:track:abc", "full");
-    const raw = env.storage.get("adaptiveShuffle:tracks");
-    assert.ok(raw, "deve ter salvado no storage");
-    const parsed = JSON.parse(raw);
-    assert.ok(parsed["spotify:track:abc"], "faixa deve existir");
-    assert.ok(parsed["spotify:track:abc"].s > 0, "score deve ter subido apos play completo");
-    assert.strictEqual(parsed["spotify:track:abc"].p, 1);
-});
+const A = { uri: "spotify:track:aaa", name: "Nice To Each Other", artist: "Olivia Dean", duration: 200000, context: "spotify:playlist:p1" };
+const B = { uri: "spotify:track:bbb", name: "Manchild", artist: "Sabrina Carpenter", duration: 200000, context: "spotify:playlist:p1" };
+const C = { uri: "spotify:track:ccc", name: "Sports car", artist: "Tate McRae", duration: 200000, context: "spotify:playlist:p1" };
+const D = { uri: "spotify:track:ddd", name: "Run Rabbit", artist: "Hajaj", duration: 200000, context: "spotify:playlist:p1" };
+
+// Toca A por `ms`, com B como proxima esperada, e troca pra B
+function listenThenNext(env, track, ms, next = B) {
+    env.changeTrack(track);
+    env.setQueue({ nextUp: [next] });
+    env.play(ms);
+    env.changeTrack(next);
+}
 
 // ============================================================
-// LÓGICA: classificação de comportamento
-// (valida o comportamento via API publica, pois as funções puras
-//  operam sobre o store interno -- usamos recordEvent como ponte)
+// SMOKE
 // ============================================================
 
-test("play completo sobe o score (normal)", () => {
+test("smoke: carrega sem erros e expoe a API", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    const t0 = api.getTrack("spotify:track:full").s;
-    api.recordEvent("spotify:track:full", "full");
-    const t1 = api.getTrack("spotify:track:full").s;
-    assert.ok(t1 > t0, "score deve subir apos full play");
-    assert.strictEqual(api.getTrack("spotify:track:full").p, 1);
-});
-
-test("skip desce o score (normal)", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.recordEvent("spotify:track:sk", "skip");
-    const s = api.getTrack("spotify:track:sk").s;
-    assert.ok(s < 0, "score deve ser negativo apos skip");
-    assert.strictEqual(api.getTrack("spotify:track:sk").sk, 1);
-});
-
-test("skip pesado desce MAIS que skip normal", () => {
-    const env = buildMockSpicetify();
-    const api1 = loadExtension(buildMockSpicetify());
-    const api2 = loadExtension(buildMockSpicetify());
-    api1.recordEvent("t:a", "skip");
-    api2.recordEvent("t:b", "heavySkip");
-    const sNormal = api1.getTrack("t:a").s;
-    const sHeavy = api2.getTrack("t:b").s;
-    assert.ok(sHeavy < sNormal, "skip pesado deve ter score mais baixo que skip normal");
-});
-
-test("agressividade intenso aplica deltas maiores", () => {
-    const envN = buildMockSpicetify();
-    const apiN = loadExtension(envN);
-    const envI = buildMockSpicetify();
-    const apiI = loadExtension(envI);
-    apiI.settings.aggressiveness = "intenso";
-    // força reload de settings interno? a ext le settings no init; ajustamos objeto em memoria:
-    // Como o snapshot foi carregado no init, manipulamos o objeto retornado:
-    apiN.recordEvent("t:n", "full");
-    apiI.recordEvent("t:i", "full");
-    // intenso deve subir mais -- NOTA: settings da apiI pode estar congelado do init; ajustamos manualmente
-    const sN = apiN.getTrack("t:n").s;
-    const sI = apiI.getTrack("t:i").s;
-    // Como o init já fixou aggressiveness, testamos comparando com o esperado:
-    assert.ok(sN > 0 && sI > 0);
-});
-
-// ============================================================
-// LÓGICA: clamp do score (não explode)
-// ============================================================
-
-test("score respeita limite superior (clamp)", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    for (let i = 0; i < 50; i++) api.recordEvent("t:clamp", "full");
-    const s = api.getTrack("t:clamp").s;
-    assert.ok(s <= 36, `score ${s} deve respeitar clamp (normal ≈ 35)`);
-});
-
-test("score respeita limite inferior (-clamp)", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    for (let i = 0; i < 50; i++) api.recordEvent("t:clampneg", "skip");
-    const s = api.getTrack("t:clampneg").s;
-    assert.ok(s >= -36, `score ${s} deve respeitar -clamp (normal ≈ -35)`);
-});
-
-// ============================================================
-// LÓGICA: shuffle ponderado
-// ============================================================
-
-test("weightedShuffle retorna todas as faixas (nunca exclui)", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.recordEvent("t:high", "full");
-    for (let i = 0; i < 5; i++) api.recordEvent("t:high", "full");
-    for (let i = 0; i < 5; i++) api.recordEvent("t:low", "skip");
-    const input = ["t:high", "t:low", "t:neutral"];
-    const out = api.weightedShuffle(input);
-    assert.strictEqual(out.length, input.length, "deve conter todas as faixas");
-    // compara conteudo (objetos vem de outro realm do vm)
-    assert.deepStrictEqual(Array.from(out).sort(), Array.from(input).sort(), "deve conter exatamente as mesmas faixas");
-});
-
-test("weightedShuffle de 1 faixa retorna ela mesma", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    const out = api.weightedShuffle(["x"]);
-    assert.strictEqual(out.length, 1);
-    assert.strictEqual(out[0], "x");
-});
-
-test("faixas amadas tendem a aparecer antes em media (statistical)", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    // amada
-    for (let i = 0; i < 8; i++) api.recordEvent("t:amada", "full");
-    // evitada
-    for (let i = 0; i < 8; i++) api.recordEvent("t:evitada", "skip");
-    const input = ["t:amada", "t:evitada"];
-    let amadaPrimeiro = 0;
-    const RUNS = 2000;
-    for (let i = 0; i < RUNS; i++) {
-        const out = api.weightedShuffle(input);
-        if (out[0] === "t:amada") amadaPrimeiro++;
+    assert.ok(api);
+    assert.strictEqual(api.version, "2.0.0");
+    for (const fn of ["weightedShuffle", "learn", "nudge", "reshuffle", "playAdaptive", "scoreOf", "identityKey"]) {
+        assert.strictEqual(typeof api[fn], "function", fn);
     }
-    const ratio = amadaPrimeiro / RUNS;
-    // amada tem peso bem maior, deve aparecer primeiro em >65% das vezes
-    assert.ok(ratio > 0.65, `amada deveria aparecer primeiro na maioria das vezes (foi ${ratio})`);
+    assert.ok(env.registeredMenus.some((m) => m.name === "Tocar com Adaptive Shuffle"));
+    assert.ok(env.registeredMenus.some((m) => m.name === "Adaptive Shuffle" && m.items.length === 3), "submenu de faixa");
 });
 
-// ============================================================
-// INTEGRAÇÃO: tracker emite songchange e classifica
-// ============================================================
+test("notify nao entra em recursao quando showNotification falha", () => {
+    const env = buildMockSpicetify();
+    env.Spicetify.showNotification = () => { throw new Error("quebrou"); };
+    const api = loadExtension(env);
+    return api.reshuffle(); // fila vazia -> tenta notificar; nao pode estourar a pilha
+});
 
-test("tracker: pular antes de 25% => skip (score negativo) ao trocar de musica", () => {
+test("Spicetify troca o objeto Player depois do load: a extensao le sempre o atual", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    // musica atual = "t:pulada", duration 100000
-    env.advanceTo("t:pulada", 100000);
-    api._resetTracking(); // sincroniza tracker com a musica atual
-    env.emitProgress(11000); // 11% => skip normal
-    // troca pra proxima
-    env.emitSongChange("t:proxima", 100000);
-    const s = api.getTrack("t:pulada").s;
-    assert.ok(s < 0, `pular aos 11% deve gerar score negativo (got ${s})`);
-    assert.ok(api.getTrack("t:pulada").sk >= 1, "deve contar 1 skip");
+    const old = env.Spicetify.Player;
+    // como o Spicetify faz no fim do setup: Player: {...Spicetify.Player, get origin() {...}}
+    const fresh = Object.assign(Object.create(Object.getPrototypeOf(old)), old);
+    env.Spicetify.Player = fresh;
+    old.data = null;
+    fresh.data = {
+        item: { uri: A.uri, name: A.name, artists: [{ name: A.artist }], duration: { milliseconds: 200000 }, metadata: {} },
+        duration: 200000, isPaused: false, context: null,
+    };
+    api._tick();
+    assert.ok(api._current(), "deveria ter comecado a acompanhar a faixa do Player novo");
+    assert.strictEqual(api._current().uri, A.uri);
 });
 
-test("tracker: ouvir ate 90% => full play ao trocar", () => {
+test("espera o Spicetify terminar o setup (Player.origin) antes de iniciar", () => {
+    const env = buildMockSpicetify();
+    delete env.Spicetify.Player.origin;
+    const api = loadExtension(env);
+    assert.strictEqual(api, undefined, "nao pode iniciar com o Player provisorio");
+});
+
+// ============================================================
+// IDENTIDADE
+// ============================================================
+
+test("identidade: versoes da mesma musica viram a mesma chave", () => {
+    const api = loadExtension(buildMockSpicetify());
+    const k = api.identityKey;
+    assert.strictEqual(k("Devil Woman - 2001 Remaster", "Cliff Richard"), k("Devil Woman", "Cliff Richard"));
+    assert.strictEqual(k("Big in Japan - Single Version; 2019 Remaster", "Alphaville"), k("Big in Japan", "Alphaville"));
+    assert.strictEqual(k("Them Bones (2022 Remaster)", "Alice In Chains"), k("Them Bones", "Alice In Chains"));
+    assert.strictEqual(k("Rein Me In (with Olivia Dean)", "Sam Fender"), k("Rein Me In", "Sam Fender"));
+    assert.strictEqual(k("Flower (feat. SZA)", "X"), k("Flower", "X"));
+    assert.strictEqual(k("Coração", "Fulano"), k("Coracao", "fulano"));
+});
+
+test("identidade: musicas diferentes continuam diferentes", () => {
+    const api = loadExtension(buildMockSpicetify());
+    const k = api.identityKey;
+    assert.notStrictEqual(k("Upside Down", "Diana Ross"), k("Upside Down", "Jack Johnson"));
+    assert.notStrictEqual(k("RAGE (SLOWED)", "X"), k("RAGE", "X"));
+    assert.notStrictEqual(k("Song - Live", "X"), k("Song", "X"));
+    assert.strictEqual(k("Sem artista", ""), null, "sem artista nao da pra identificar");
+});
+
+test("identidade: aprendizado em URIs diferentes da mesma musica e compartilhado", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    env.advanceTo("t:ouvida", 100000);
-    api._resetTracking();
-    env.emitProgress(90000); // 90% => full
-    env.emitSongChange("t:proxima2", 100000);
-    const s = api.getTrack("t:ouvida").s;
-    assert.ok(s > 0, `ouvir 90% deve gerar score positivo (got ${s})`);
-    assert.strictEqual(api.getTrack("t:ouvida").p, 1);
+    api.learn("spotify:track:single", "Nice To Each Other", "Olivia Dean", "full");
+    api.learn("spotify:track:album", "Nice To Each Other", "Olivia Dean", "full");
+    assert.strictEqual(api.peekSong("spotify:track:single"), api.peekSong("spotify:track:album"));
+    assert.strictEqual(api.peekSong("spotify:track:album").p, 2);
 });
 
 // ============================================================
-// INTEGRAÇÃO: reshuffle reordena a fila via setQueue
+// MODELO DE SCORE
 // ============================================================
 
-test("reshuffle: chama setQueue com as faixas reordenadas (mantém todas)", () => {
+test("score: um pulo isolado quase nao pesa (nao enterra a musica)", () => {
+    const api = loadExtension(buildMockSpicetify());
+    api.learn(A.uri, A.name, A.artist, "heavySkip");
+    const s = api.scoreOf(A.uri);
+    assert.ok(s < 0 && s > -30, `um pulo deveria dar score levemente negativo (got ${s})`);
+});
+
+test("score: varias audicoes completas -> favorita; varios pulos -> evitada", () => {
+    const api = loadExtension(buildMockSpicetify());
+    for (let i = 0; i < 8; i++) api.learn(A.uri, A.name, A.artist, "full");
+    for (let i = 0; i < 8; i++) api.learn(B.uri, B.name, B.artist, "heavySkip");
+    assert.ok(api.scoreOf(A.uri) >= 60, `A deveria ser favorita (got ${api.scoreOf(A.uri)})`);
+    assert.ok(api.scoreOf(B.uri) <= -60, `B deveria ser evitada (got ${api.scoreOf(B.uri)})`);
+});
+
+test("score: musica curtida resiste a pulos", () => {
+    const api = loadExtension(buildMockSpicetify());
+    const s = api.songFor(A.uri, A.name, A.artist);
+    s.lk = 1;
+    api.learn(A.uri, A.name, A.artist, "skip");
+    api.learn(A.uri, A.name, A.artist, "skip");
+    assert.ok(api.scoreOf(A.uri) > 0, `curtida com 2 pulos ainda deve ser positiva (got ${api.scoreOf(A.uri)})`);
+});
+
+test("score: evidencia decai com o tempo (meia-vida)", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    // popula a fila com 3 faixas
-    env._queueState.nextUp = [
-        { uri: "t:a" }, { uri: "t:b" }, { uri: "t:c" },
-    ];
-    env.resetSetQueueCalls();
-    // aprende que t:a é amada
-    for (let i = 0; i < 6; i++) api.recordEvent("t:a", "full");
-
-    return api.reshuffle().then(() => {
-        const calls = env.setQueueCalls();
-        assert.strictEqual(calls.length, 1, "setQueue deve ser chamado 1x");
-        const uris = calls[0].nextTracks.map((t) => t.contextTrack.uri);
-        assert.strictEqual(uris.length, 4, "3 faixas + 1 delimiter");
-        assert.strictEqual(uris[3], "spotify:delimiter", "ultima deve ser o delimiter");
-        // todas as 3 originais presentes
-        for (const u of ["t:a", "t:b", "t:c"]) {
-            assert.ok(uris.includes(u), `deve conter ${u}`);
-        }
-    });
+    for (let i = 0; i < 5; i++) api.learn(B.uri, B.name, B.artist, "heavySkip");
+    const antes = api.scoreOf(B.uri);
+    env.wait(api.MODEL.halfLifeDays * DAY * 2);
+    const depois = api.scoreOf(B.uri);
+    assert.ok(depois > antes, `score negativo deve se recuperar com o tempo (${antes} -> ${depois})`);
 });
 
-test("reshuffle: avisa quando a fila é pequena", () => {
+test("turbinar/evitar: ajuste manual, clicar no oposto volta pro neutro, respeita limite", () => {
+    const api = loadExtension(buildMockSpicetify());
+    api.nudge(A.uri, A.name, A.artist, +1);
+    assert.strictEqual(api.scoreOf(A.uri), 20);
+    api.nudge(A.uri, A.name, A.artist, -1);
+    assert.strictEqual(api.scoreOf(A.uri), 0, "oposto volta pro neutro");
+    for (let i = 0; i < 10; i++) api.nudge(A.uri, A.name, A.artist, +1);
+    assert.strictEqual(api.peekSong(A.uri).m, 5);
+    assert.ok(api.scoreOf(A.uri) <= 100);
+});
+
+test("aprendizado desligado: nao aprende, mas turbinar ainda funciona", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    env._queueState.nextUp = [{ uri: "t:unica" }];
-    env.resetSetQueueCalls();
-    return api.reshuffle().then(() => {
-        assert.strictEqual(env.setQueueCalls().length, 0, "nao deve chamar setQueue com fila < 2");
-    });
+    api.settings.learning = false;
+    listenThenNext(env, A, 200000);
+    assert.strictEqual(api.peekSong(A.uri), null);
+    api.nudge(A.uri, A.name, A.artist, +1);
+    assert.ok(api.scoreOf(A.uri) > 0);
 });
 
 // ============================================================
-// PERSISTÊNCIA: reload simula reinicio do Spotify
+// TRACKER
 // ============================================================
 
-test("persistencia: score sobrevive a um 'restart' (reload da extensão)", () => {
-    const env1 = buildMockSpicetify();
-    const api1 = loadExtension(env1);
-    for (let i = 0; i < 5; i++) api1.recordEvent("t:sobrevive", "full");
-    const sAntes = api1.getTrack("t:sobrevive").s;
+test("tracker: ouvir ate o fim conta como completa", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    listenThenNext(env, A, 199000);
+    const s = api.peekSong(A.uri);
+    assert.strictEqual(s.p, 1);
+    assert.ok(api.scoreOf(A.uri) > 0);
+});
 
-    // novo ambiente que COMPARTILHA o mesmo storage (simula mesmo Spotify)
+test("tracker: pular no comeco conta como pulo (e cria entrada com nome e artista)", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    listenThenNext(env, A, 6000);
+    const s = api.peekSong(A.uri);
+    assert.strictEqual(s.sk, 1);
+    assert.strictEqual(s.n, A.name);
+    assert.strictEqual(s.a, A.artist);
+    assert.ok(api.scoreOf(A.uri) < 0);
+});
+
+test("tracker: menos de 3s e navegacao, nao conta", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    listenThenNext(env, A, 2000);
+    assert.strictEqual(api.peekSong(A.uri), null);
+});
+
+test("tracker: ouvir metade da credito parcial, sem contar como completa", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    listenThenNext(env, A, 100000);
+    const s = api.peekSong(A.uri);
+    assert.strictEqual(s.p, 0);
+    assert.strictEqual(s.sk, 0);
+    assert.ok(api.scoreOf(A.uri) > 0);
+});
+
+test("tracker: pular pra frente (seek) nao conta como ouvido", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(A);
+    env.setQueue({ nextUp: [B] });
+    env.play(10000);
+    env.seek(150000);   // pulou pra 75% sem ouvir
+    env.play(5000);
+    env.changeTrack(B);
+    const s = api.peekSong(A.uri);
+    assert.strictEqual(s.p, 0, "nao pode virar audicao completa");
+    assert.strictEqual(s.sk, 1, "15s ouvidos de 200s = pulo");
+});
+
+test("tracker: pausa longa nao vira tempo ouvido", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(A);
+    env.setQueue({ nextUp: [B] });
+    env.play(10000);
+    env.pause();
+    env.wait(30 * 60000);
+    env.resume();
+    env.play(5000);
+    env.changeTrack(B);
+    assert.strictEqual(api.peekSong(A.uri).p, 0);
+    assert.strictEqual(api.peekSong(A.uri).sk, 1);
+});
+
+test("tracker: faixa retomada no meio (abriu o app) nao e penalizada ao pular", () => {
+    const env = buildMockSpicetify();
+    env.initTrack(A, 120000); // ja estava em 60% quando a extensao carregou
+    const api = loadExtension(env);
+    env.setQueue({ nextUp: [B] });
+    env.play(5000);
+    env.changeTrack(B);
+    const s = api.peekSong(A.uri);
+    assert.ok(!s || s.sk === 0, "nao deve contar pulo");
+});
+
+test("tracker: varios pulos seguidos pesam cada vez menos", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    listenThenNext(env, A, 5000, B);
+    env.setQueue({ nextUp: [C] }); env.play(5000); env.changeTrack(C);
+    env.setQueue({ nextUp: [D] }); env.play(5000); env.changeTrack(D);
+    const dA = api.peekSong(A.uri).d, dB = api.peekSong(B.uri).d, dC = api.peekSong(C.uri).d;
+    assert.ok(dA > dB && dB > dC, `penalidades devem diminuir: ${dA} > ${dB} > ${dC}`);
+});
+
+test("tracker: escolher outra musica (fora da ordem) da credito pra escolhida e pune menos a atual", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(A);
+    env.setQueue({ nextUp: [B] });
+    env.play(6000);
+    env.changeTrack(C); // usuario clicou em C, nao era a proxima
+    assert.strictEqual(api.peekSong(C.uri).pk, 1, "C foi escolhida");
+    const envB = buildMockSpicetify();
+    const apiB = loadExtension(envB);
+    listenThenNext(envB, A, 6000);
+    assert.ok(api.peekSong(A.uri).d < apiB.peekSong(A.uri).d, "trocar por escolha pune menos que apertar proxima");
+});
+
+test("tracker: troca causada pela propria extensao nao penaliza a faixa atual", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.addPlaylist("spotify:playlist:p2", [B, C, D]);
+    env.changeTrack(A);
+    env.play(5000);
+    await api.playAdaptive("spotify:playlist:p2");
+    assert.strictEqual(env.Spicetify.Player._nextCalls, 1);
+    env.changeTrack(B);
+    const s = api.peekSong(A.uri);
+    assert.ok(!s || s.sk === 0, "A nao foi pulada pelo usuario");
+});
+
+test("tracker: repetir uma faixa so (repeat one) conta cada volta", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(A);
+    env.play(199000);
+    env.state.pos = 0; // deu a volta sem songchange
+    env.play(1000);
+    assert.strictEqual(api.peekSong(A.uri).p, 1);
+});
+
+test("tracker: curtir durante a musica marca como curtida e registra na atividade", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(Object.assign({ liked: false }, A));
+    env.play(3000);
+    env.setLiked(true);
+    env.play(1000);
+    assert.strictEqual(api.peekSong(A.uri).lk, 1);
+    assert.strictEqual(api.store.log[api.store.log.length - 1].k, "like");
+});
+
+test("tracker: adicionar a fila conta a favor; adicionar album inteiro pesa menos por faixa", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(A);
+    env.setQueue({ queued: [B] });
+    env.changeTrack(C);
+    assert.strictEqual(api.peekSong(B.uri).q, 1);
+    const one = api.peekSong(B.uri).l;
+
     const env2 = buildMockSpicetify();
-    env2.storage = env1.storage;
-    env2.Spicetify.LocalStorage = env2.storage;
     const api2 = loadExtension(env2);
-    const sDepois = api2.getTrack("t:sobrevive").s;
-    assert.strictEqual(sDepois, sAntes, "score deve ser igual apos reload");
+    env2.changeTrack(A);
+    const album = [1, 2, 3, 4, 5].map((i) => ({ uri: "spotify:track:al" + i, name: "Faixa " + i, artist: "Banda" }));
+    env2.setQueue({ queued: album });
+    env2.changeTrack(C);
+    assert.ok(api2.peekSong("spotify:track:al1").l < one);
 });
 
 // ============================================================
-// CREDITO PARCIAL (25% - 80%)
+// SHUFFLE
 // ============================================================
 
-test("tracker: ouvir 50% => credito parcial (score positivo, menor que full)", () => {
+test("weightedShuffle: devolve todas as faixas, sem criar entradas pra desconhecidas", () => {
+    const api = loadExtension(buildMockSpicetify());
+    const uris = Array.from({ length: 50 }, (_, i) => "spotify:track:x" + i);
+    const out = api.weightedShuffle(uris);
+    assert.strictEqual(out.length, 50);
+    assert.strictEqual(new Set(out).size, 50);
+    assert.strictEqual(Object.keys(api.store.songs).length, 0, "embaralhar nao pode poluir o armazenamento");
+});
+
+test("weightedShuffle: favoritas tendem a vir antes, evitadas depois", () => {
+    const api = loadExtension(buildMockSpicetify());
+    for (let i = 0; i < 6; i++) api.learn("spotify:track:love", "Love", "X", "full");
+    for (let i = 0; i < 6; i++) api.learn("spotify:track:hate", "Hate", "Y", "heavySkip");
+    api.peekSong("spotify:track:love").lp = 0; // nao tocou recentemente (senao a anti-repeticao empurra pro fim)
+    const uris = ["spotify:track:love", "spotify:track:hate"].concat(Array.from({ length: 18 }, (_, i) => "spotify:track:n" + i));
+    let love = 0, hate = 0;
+    for (let r = 0; r < 300; r++) {
+        const out = api.weightedShuffle(uris);
+        love += out.indexOf("spotify:track:love");
+        hate += out.indexOf("spotify:track:hate");
+    }
+    assert.ok(love / 300 < 6, `favorita deveria ficar no comeco (media ${love / 300})`);
+    assert.ok(hate / 300 > 13, `evitada deveria ficar no fim (media ${hate / 300})`);
+});
+
+test("weightedShuffle: o que tocou ha pouco vai mais pro fim (anti-repeticao)", () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    env.advanceTo("t:parcial", 100000);
-    api._resetTracking();
-    env.emitProgress(50000); // 50% => parcial
-    env.emitSongChange("t:proxima", 100000);
-    const t = api.getTrack("t:parcial");
-    assert.ok(t.s > 0, `ouvir 50% deve dar score positivo (got ${t.s})`);
-    assert.ok(t.s < 3, `credito parcial deve ser menor que o full (got ${t.s})`);
-    assert.strictEqual(t.p, 0, "parcial nao conta como play completo");
+    api.learn("spotify:track:recent", "Recent", "X", "full");
+    api.learn("spotify:track:old", "Old", "Y", "full");
+    api.peekSong("spotify:track:old").lp = env.clock.t - 3 * DAY;
+    const uris = ["spotify:track:recent", "spotify:track:old"].concat(Array.from({ length: 10 }, (_, i) => "spotify:track:n" + i));
+    let recent = 0, old = 0;
+    for (let r = 0; r < 300; r++) {
+        const out = api.weightedShuffle(uris);
+        recent += out.indexOf("spotify:track:recent");
+        old += out.indexOf("spotify:track:old");
+    }
+    assert.ok(recent > old, `recente deveria vir depois (${recent / 300} vs ${old / 300})`);
+});
+
+test("spreadArtists: evita mesmo artista em sequencia quando possivel", () => {
+    const api = loadExtension(buildMockSpicetify());
+    const artist = { a1: "A", a2: "A", a3: "A", b1: "B", b2: "B", c1: "C" };
+    const out = api.spreadArtists(["a1", "a2", "a3", "b1", "b2", "c1"], (u) => artist[u]);
+    for (let i = 1; i < out.length; i++) {
+        if (artist[out[i]] === artist[out[i - 1]]) assert.fail("artista repetido em sequencia: " + out.join(","));
+    }
 });
 
 // ============================================================
-// SKIP FANTASMA NO STARTUP
+// FILA
 // ============================================================
 
-test("tracker: sem dados de progresso (startup) NAO gera skip fantasma", () => {
+test("reshuffle: busca a playlist inteira, mantem a fila manual na frente e termina com delimiter", async () => {
     const env = buildMockSpicetify();
     const api = loadExtension(env);
-    env.advanceTo("t:atual", 100000);
-    api._resetTracking(); // lastProgressMs = -1 (sentinela)
-    env.emitSongChange("t:proxima", 100000);
-    const t = api.getTrack("t:atual");
-    assert.strictEqual(t.s, 0, "nao deve penalizar a musica atual sem progresso conhecido");
-    assert.strictEqual(t.sk, 0, "nao deve contar skip");
-});
-
-// ============================================================
-// INFLACAO DE QUEUEADD PELO RESHUFFLE DA PROPRIO EXTENSAO
-// ============================================================
-
-test("reshuffle: faixas inseridas pela propria extensao NAO ganham queueAdd", async () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
+    const tracks = Array.from({ length: 30 }, (_, i) => ({ uri: "spotify:track:t" + i, name: "Song " + i, artist: "Artist " + (i % 7) }));
+    env.addPlaylist("spotify:playlist:p1", tracks);
+    env.changeTrack(Object.assign({}, tracks[0], { context: "spotify:playlist:p1" }));
+    env.setQueue({ queued: [C], nextUp: tracks.slice(1, 6) });
     env.resetSetQueueCalls();
-    await api.reshuffle();
-    env.emitSongChange("t:current", 100000);
-    assert.strictEqual(api.getTrack("t:a").q, 0, "t:a nao deve ganhar queueAdd da propria extensao");
-    assert.strictEqual(api.getTrack("t:b").q, 0, "t:b nao deve ganhar queueAdd da propria extensao");
-    assert.ok(!api.tracks["spotify:delimiter"], "delimiter nao deve virar faixa no store");
+
+    assert.strictEqual(await api.reshuffle(), true);
+    const call = env.setQueueCalls()[0];
+    const uris = call.nextTracks.map((t) => t.contextTrack.uri);
+    assert.strictEqual(uris[0], C.uri, "fila manual continua na frente");
+    assert.strictEqual(call.nextTracks[0].provider, "queue");
+    assert.strictEqual(uris[uris.length - 1], "spotify:delimiter");
+    const body = uris.slice(1, -1);
+    assert.strictEqual(body.length, 29, "playlist inteira menos a atual");
+    assert.ok(!body.includes(tracks[0].uri), "atual nao repete");
+    assert.strictEqual(new Set(body).size, 29);
+    assert.strictEqual(Object.keys(api.store.songs).length, 0, "reshuffle nao cria entradas pra faixas sem historico");
 });
 
-test("migracao: entrada fantasma spotify:delimiter e removida no load", () => {
+test("reshuffle: liga versoes diferentes da playlist ao que ja foi aprendido", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    for (let i = 0; i < 5; i++) api.learn("spotify:track:single", "Nice To Each Other", "Olivia Dean", "full");
+    env.addPlaylist("spotify:playlist:p1", [
+        { uri: "spotify:track:album", name: "Nice To Each Other", artist: "Olivia Dean" },
+        { uri: "spotify:track:other", name: "Outra", artist: "Alguem" },
+    ]);
+    env.changeTrack(Object.assign({}, D, { context: "spotify:playlist:p1" }));
+    await api.reshuffle();
+    assert.strictEqual(api.scoreOf("spotify:track:album"), api.scoreOf("spotify:track:single"));
+    assert.ok(api.scoreOf("spotify:track:album") > 0);
+});
+
+test("reshuffle: faixas da playlist nas Curtidas ganham preferencia mesmo sem historico", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    const tracks = Array.from({ length: 20 }, (_, i) => ({ uri: "spotify:track:t" + i, name: "Song " + i, artist: "Artist " + i }));
+    env.addPlaylist("spotify:playlist:p1", tracks);
+    env.liked.add("spotify:track:t19");
+    let pos = 0;
+    const R = 200;
+    for (let r = 0; r < R; r++) {
+        env.changeTrack({ uri: "spotify:track:cur", name: "Cur", artist: "Z", context: "spotify:playlist:p1" });
+        env.resetSetQueueCalls();
+        await api.reshuffle({ silent: true });
+        pos += env.setQueueCalls()[0].nextTracks.map((t) => t.contextTrack.uri).indexOf("spotify:track:t19");
+    }
+    // sem preferencia a media seria 9,5; com a Curtida fica ~6,3 (pior caso simulado: 7,9)
+    assert.ok(pos / R < 8.5, `curtida deveria vir cedo (media ${pos / R})`);
+});
+
+test("reshuffle: contexto desconhecido (radio) reordena so o trecho do contexto e preserva o resto", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(Object.assign({}, A, { context: "spotify:station:xyz" }));
+    const ctx = Array.from({ length: 6 }, (_, i) => ({ uri: "spotify:track:r" + i, name: "R" + i, artist: "Ar" + i }));
+    const auto = { uri: "spotify:track:auto", name: "Auto", artist: "Q", provider: "autoplay" };
+    env.setQueue({ queued: [B], nextUp: ctx.concat([auto]) });
+    env.resetSetQueueCalls();
+    assert.strictEqual(await api.reshuffle(), true);
+    const nt = env.setQueueCalls()[0].nextTracks;
+    assert.strictEqual(nt[0].contextTrack.uri, B.uri, "fila manual na frente");
+    assert.strictEqual(nt[nt.length - 1].contextTrack.uri, auto.uri, "autoplay continua no fim");
+    assert.strictEqual(nt[1].contextTrack.uid.indexOf("uid-"), 0, "mantem os objetos originais do Spotify");
+    assert.strictEqual(nt.length, 8);
+});
+
+test("reshuffle: avisa quando nao ha o que embaralhar", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.changeTrack(Object.assign({}, A, { context: "spotify:station:xyz" }));
+    assert.strictEqual(await api.reshuffle(), false);
+    assert.ok(env.notifications.some((n) => /suficientes/.test(n)));
+});
+
+test("playAdaptive: toca a playlist na ordem adaptativa e atualiza o contexto", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.addPlaylist("spotify:playlist:p9", [A, B, C, D]);
+    await api.playAdaptive("spotify:playlist:p9");
+    const uris = env.setQueueCalls()[0].nextTracks.map((t) => t.contextTrack.uri);
+    assert.strictEqual(uris.length, 5);
+    assert.strictEqual(env.Spicetify.Platform.PlayerAPI._lastContext.uri, "spotify:playlist:p9");
+});
+
+test("shuffle automatico: com o aleatorio do Spotify ligado, assume ao comecar um contexto novo", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    api.settings.autoShuffle = true;
+    env.addPlaylist("spotify:playlist:p1", [A, B, C, D]);
+    env.resetSetQueueCalls();
+    env.changeTrack(A, { shuffle: true });
+    await settle();
+    assert.strictEqual(env.setQueueCalls().length, 1);
+});
+
+test("shuffle automatico: desligado (ou aleatorio do Spotify desligado) nao mexe na fila", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.addPlaylist("spotify:playlist:p1", [A, B, C, D]);
+    env.changeTrack(A, { shuffle: true });
+    await settle();
+    assert.strictEqual(env.setQueueCalls().length, 0, "autoShuffle desligado");
+    api.settings.autoShuffle = true;
+    env.changeTrack(B, { shuffle: false, context: { uri: "spotify:playlist:p1" } });
+    await settle();
+    assert.strictEqual(env.setQueueCalls().length, 0, "aleatorio do Spotify desligado");
+});
+
+// ============================================================
+// PERSISTENCIA E MIGRACAO
+// ============================================================
+
+test("persistencia: score sobrevive a um reload", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    for (let i = 0; i < 3; i++) api.learn(A.uri, A.name, A.artist, "full");
+    api.flush();
+    const antes = api.scoreOf(A.uri);
+    const api2 = loadExtension(env);
+    assert.strictEqual(api2.scoreOf(A.uri), antes);
+});
+
+test("migracao v1: converte contagens, ignora lixo e mantem o dado antigo como backup", () => {
+    const env = buildMockSpicetify();
+    const legacy = {
+        "spotify:track:loved": { s: 35, p: 10, sk: 1, q: 3, pk: 0, t: env.clock.t, n: "Loved" },
+        "spotify:track:oneskip": { s: -5, p: 0, sk: 1, q: 0, pk: 0, t: env.clock.t, n: "One Skip" },
+        "spotify:track:zero": { s: 0, p: 0, sk: 0, q: 0, pk: 0, t: env.clock.t, n: "" },
+        "spotify:delimiter": { s: 3, p: 0, sk: 0, q: 1, pk: 0, t: env.clock.t, n: "spotify:delimiter" },
+        "": { s: 5, p: 0, sk: 0, q: 1, pk: 0, t: env.clock.t, n: "" },
+    };
+    env.storage.set("adaptiveShuffle:tracks", JSON.stringify(legacy));
+    const api = loadExtension(env);
+    assert.deepStrictEqual(Object.keys(api.store.songs).sort(), ["spotify:track:loved", "spotify:track:oneskip"]);
+    assert.ok(api.scoreOf("spotify:track:loved") >= 60);
+    assert.ok(api.scoreOf("spotify:track:oneskip") > -25, "um pulo antigo nao enterra mais a musica");
+    assert.ok(env.storage.get("adaptiveShuffle:tracks"), "dado v1 continua la como backup");
+});
+
+test("migracao v1: manutencao em background descobre titulo/artista e junta duplicatas", async () => {
     const env = buildMockSpicetify();
     env.storage.set("adaptiveShuffle:tracks", JSON.stringify({
-        "spotify:delimiter": { s: 3, p: 0, sk: 0, q: 1, pk: 0, t: Date.now(), n: "spotify:delimiter" },
+        "spotify:track:v1a": { s: 27, p: 4, sk: 1, q: 0, pk: 2, t: env.clock.t, n: "Nice To Each Other" },
+        "spotify:track:v1b": { s: -10, p: 1, sk: 3, q: 0, pk: 0, t: env.clock.t, n: "Nice To Each Other" },
     }));
+    env.catalog["spotify:track:v1a"] = { name: "Nice To Each Other", artist: "Olivia Dean" };
+    env.catalog["spotify:track:v1b"] = { name: "Nice To Each Other", artist: "Olivia Dean" };
+    env.liked.add("spotify:track:v1b");
     const api = loadExtension(env);
-    assert.ok(!api.tracks["spotify:delimiter"], "entrada fantasma deve ser removida ao carregar");
+    await api.backgroundMaintenance();
+    assert.strictEqual(api.peekSong("spotify:track:v1a"), api.peekSong("spotify:track:v1b"));
+    const s = api.peekSong("spotify:track:v1a");
+    assert.strictEqual(s.p, 5);
+    assert.strictEqual(s.lk, 1, "status de Curtida atualizado");
+    assert.ok(api.scoreOf("spotify:track:v1b") > 0);
 });
 
-// ============================================================
-// TURBO / EVITAR (+10 / -10)
-// ============================================================
-
-test("turboTrack soma +10 e avoidTrack subtrai -10, respeitando clamp", () => {
+test("configuracoes: descarta chaves antigas e mantem as escolhas do usuario", () => {
     const env = buildMockSpicetify();
+    env.storage.set("adaptiveShuffle:settings", JSON.stringify({ aggressiveness: "intenso", clamp: 10, decay: 0.9, autoShuffle: true, learning: true }));
     const api = loadExtension(env);
-    api.turboTrack("t:boost", "Booster");
-    assert.strictEqual(api.getTrack("t:boost").s, 10);
-    api.avoidTrack("t:avoid", "Avoiding");
-    assert.strictEqual(api.getTrack("t:avoid").s, -10);
-    for (let i = 0; i < 4; i++) api.turboTrack("t:clamp", "Clamper");
-    assert.strictEqual(api.getTrack("t:clamp").s, 35, "deve respeitar clamp superior (normal = 35)");
-    for (let i = 0; i < 6; i++) api.avoidTrack("t:clampneg", "Negativo");
-    assert.strictEqual(api.getTrack("t:clampneg").s, -35, "deve respeitar clamp inferior (normal = -35)");
-});
-
-// ============================================================
-// AUTO SHUFFLE
-// ============================================================
-
-test("autoShuffle: desligado por padrao nos defaults", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    assert.strictEqual(api.settings.autoShuffle, false, "autoShuffle deve comecar desligado");
-    assert.ok(api.settings.autoShuffleThreshold >= 1, "threshold deve ser >= 1");
-});
-
-test("autoShuffle off: songchange NAO reordena a fila", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.settings.autoShuffle = false;
-    api.settings.autoShuffleThreshold = 3;
-    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
-    env.resetSetQueueCalls();
-    env.emitSongChange("t:current", 100000);
-    assert.strictEqual(env.setQueueCalls().length, 0, "nao deve chamar setQueue com autoShuffle desligado");
-});
-
-test("autoShuffle on + fila abaixo do threshold: reordena no songchange", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.settings.autoShuffle = true;
-    api.settings.autoShuffleThreshold = 3;
-    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
-    env.resetSetQueueCalls();
-    env.emitSongChange("t:current", 100000);
-    const calls = env.setQueueCalls();
-    assert.strictEqual(calls.length, 1, "deve chamar setQueue 1x");
-    const uris = calls[0].nextTracks.map((t) => t.contextTrack.uri);
-    assert.ok(uris.includes("t:a"), "deve conter t:a");
-    assert.ok(uris.includes("t:b"), "deve conter t:b");
-    assert.strictEqual(uris.length, 3, "2 faixas + 1 delimiter");
-});
-
-test("autoShuffle on + fila >= threshold: NAO reordena", () => {
-    const env = buildMockSpicetify();
-    const api = loadExtension(env);
-    api.settings.autoShuffle = true;
-    api.settings.autoShuffleThreshold = 3;
-    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }, { uri: "t:c" }, { uri: "t:d" }];
-    env.resetSetQueueCalls();
-    env.emitSongChange("t:current", 100000);
-    assert.strictEqual(env.setQueueCalls().length, 0, "nao deve reordenar quando fila >= threshold");
+    assert.strictEqual(api.settings.aggressiveness, "intenso");
+    assert.strictEqual(api.settings.autoShuffle, true);
+    assert.strictEqual(api.settings.clamp, undefined);
+    assert.strictEqual(api.settings.decay, undefined);
 });

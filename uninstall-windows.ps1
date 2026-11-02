@@ -16,4 +16,4 @@ spicetify config extensions "$Name.js"
 spicetify apply
 Write-Host "✅ Adaptive Shuffle desinstalado." -ForegroundColor Green
 Write-Host "Os dados que ele aprendeu continuam no LocalStorage do Spotify."
-Write-Host "Pra apagar tudo: menu do Spicetify → Adaptive Shuffle → `"Começar do zero`"."
+Write-Host "Pra apagar tudo: botão Adaptive Shuffle → Configurações → `"Apagar tudo`"."

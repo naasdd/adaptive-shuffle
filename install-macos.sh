@@ -49,8 +49,8 @@ spicetify apply
 
 echo
 echo "✅ Pronto! Reinicie o Spotify e procure:"
-echo "   • Um botão ✨ na barra do player"
+echo "   • Um botão ✦ (shuffle com brilho) do lado direito da barra do player"
 echo "   • \"Tocar com Adaptive Shuffle\" ao clicar com o direito numa playlist"
-echo "   • \"Adaptive Shuffle\" no menu do Spicetify (configurações)"
+echo "   • \"Adaptive Shuffle\" ao clicar com o direito numa faixa (turbinar/evitar)"
 echo
-echo "Para DESINSTALAR: ./uninstall.sh"
+echo "Para DESINSTALAR: ./uninstall-macos.sh"
