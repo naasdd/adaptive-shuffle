@@ -21,7 +21,7 @@
         fullPlayThreshold: 0.80,
         heavySkipThreshold: 0.10,
         minListenMs: 3000,
-        decay: 0.9,
+        decay: 0.95,
         pollIntervalMs: 15000,
         seenWelcome: false,
         autoShuffle: false,
@@ -29,24 +29,28 @@
     };
 
     const AGGRESSIVENESS = {
-        leve:    { clamp: 20, weightDiv: 3,  full: 1.0,  skip: -1.0,  heavySkip: -1.5,  queueAdd: 1.5,  pick: 1.0  },
-        normal: { clamp: 35, weightDiv: 2,  full: 2.0,  skip: -2.0,  heavySkip: -3.0,  queueAdd: 3.0,  pick: 2.0  },
-        intenso: { clamp: 50, weightDiv: 1.2, full: 3.0, skip: -3.0, heavySkip: -5.0, queueAdd: 5.0, pick: 3.0 },
+        leve:    { clamp: 20, weightDiv: 3,  full: 1.5,  skip: -1.0,  heavySkip: -1.5,  queueAdd: 1.5,  pick: 1.0  },
+        normal: { clamp: 35, weightDiv: 2,  full: 3.0,  skip: -2.0,  heavySkip: -3.0,  queueAdd: 3.0,  pick: 2.0  },
+        intenso: { clamp: 50, weightDiv: 1.2, full: 4.0, skip: -3.0, heavySkip: -5.0, queueAdd: 5.0, pick: 3.0 },
     };
 
     function agg() { return AGGRESSIVENESS[settings.aggressiveness] || AGGRESSIVENESS.normal; }
 
     var settings = loadSettings();
     var tracks = {};
-    var knownQueuedUris = {};
-    var lastUri = null, lastTrackName = "", lastProgressMs = 0, lastDurationMs = 0;
+    var lastUri = null, lastTrackName = "", lastProgressMs = -1, lastDurationMs = 0;
     var prevQueuedUris = {};
     var autoShufflePending = false;
 
     function loadSettings() {
         try {
             var s = JSON.parse(LocalStorage.get(SETTINGS_KEY) || "null");
-            if (s && typeof s === "object") return Object.assign({}, DEFAULT_SETTINGS, s);
+            if (s && typeof s === "object") {
+                var merged = Object.assign({}, DEFAULT_SETTINGS, s);
+                // decay nao e configuravel na UI: forca o default atual (migracao de versoes antigas)
+                merged.decay = DEFAULT_SETTINGS.decay;
+                return merged;
+            }
         } catch (e) {}
         var def = Object.assign({}, DEFAULT_SETTINGS);
         LocalStorage.set(SETTINGS_KEY, JSON.stringify(def));
@@ -71,6 +75,12 @@
     }
 
     tracks = loadTracks();
+
+    // Migracao: remove a faixa fantasma criada pelo delimiter em versoes antigas
+    if (tracks["spotify:delimiter"]) {
+        delete tracks["spotify:delimiter"];
+        saveTracks();
+    }
 
     function getTrack(uri) {
         if (!tracks[uri]) tracks[uri] = { s: 0, p: 0, sk: 0, q: 0, pk: 0, t: Date.now(), n: "" };
@@ -121,7 +131,7 @@
         return a[kind] || 0;
     }
 
-    function recordEvent(uri, kind, optName) {
+    function recordEvent(uri, kind, optName, customDelta) {
         if (!settings.learning) return;
         var t = getTrack(uri);
         switch (kind) {
@@ -130,7 +140,8 @@
             case "queueAdd": t.q++; break;
             case "pick": t.pk++; break;
         }
-        t.s = t.s * settings.decay + getDelta(kind);
+        var delta = (kind === "partial" && typeof customDelta === "number") ? customDelta : getDelta(kind);
+        t.s = t.s * settings.decay + delta;
         var clamp = agg().clamp;
         if (t.s > clamp) t.s = clamp;
         if (t.s < -clamp) t.s = -clamp;
@@ -175,10 +186,17 @@
 
     Player.addEventListener("songchange", function() {
         try {
-            if (lastUri && lastDurationMs > 0) {
+            // lastProgressMs = -1 significa "sem dados de progresso" (startup) -> nao classificar
+            if (lastUri && lastDurationMs > 0 && lastProgressMs >= 0) {
                 var ratio = lastProgressMs / lastDurationMs;
                 var kind = classifyListened(ratio, lastProgressMs);
-                if (kind) recordEvent(lastUri, kind, lastTrackName);
+                if (kind === "partial") {
+                    var span = settings.fullPlayThreshold - settings.skipThreshold;
+                    var f = Math.min(1, (ratio - settings.skipThreshold) / span);
+                    recordEvent(lastUri, "partial", lastTrackName, getDelta("full") * f);
+                } else if (kind) {
+                    recordEvent(lastUri, kind, lastTrackName);
+                }
             }
 
             var info = getTrackInfo();
@@ -190,13 +208,13 @@
                 lastUri = null;
                 lastTrackName = "";
             }
-            lastProgressMs = 0;
+            lastProgressMs = -1;
 
             // check for queue adds
             var qs = getQueueState();
             var cur = qs.queued;
             for (var i = 0; i < cur.length; i++) {
-                if (!prevQueuedUris[cur[i]]) recordEvent(cur[i], "queueAdd");
+                if (cur[i] !== "spotify:delimiter" && !prevQueuedUris[cur[i]]) recordEvent(cur[i], "queueAdd");
             }
             var newPrev = {};
             for (var i = 0; i < cur.length; i++) newPrev[cur[i]] = true;
@@ -212,7 +230,7 @@
             var qs = getQueueState();
             var cur = qs.queued;
             for (var i = 0; i < cur.length; i++) {
-                if (!prevQueuedUris[cur[i]]) recordEvent(cur[i], "queueAdd");
+                if (cur[i] !== "spotify:delimiter" && !prevQueuedUris[cur[i]]) recordEvent(cur[i], "queueAdd");
             }
             var newPrev = {};
             for (var i = 0; i < cur.length; i++) newPrev[cur[i]] = true;
@@ -321,6 +339,12 @@
             return { contextTrack: { uri: uri, uid: "", metadata: { is_queued: "false" } }, removed: [], blocked: [], provider: "context" };
         });
         _client.setQueue({ nextTracks: nextTracks, prevTracks: _queue.prevTracks, queueRevision: _queue.queueRevision });
+        // Marca as faixas inseridas por NOS como conhecidas: nao contam como queueAdd do usuario
+        var newPrev = {};
+        for (var i = 0; i < list.length; i++) {
+            if (list[i] !== "spotify:delimiter") newPrev[list[i]] = true;
+        }
+        prevQueuedUris = newPrev;
         if (contextUri) {
             var sessionId = Platform.PlayerAPI.getState().sessionId;
             Platform.PlayerAPI.updateContext(sessionId, { uri: contextUri, url: "context://" + contextUri });
@@ -382,7 +406,7 @@
             ),
             Spicetify.React.createElement("div", { className: "as-step" },
                 Spicetify.React.createElement("strong", null, "Como o score funciona"),
-                Spicetify.React.createElement("p", null, "Cada musica tem um score de -10 a +10 que muda conforme seu comportamento: ouvir ate o fim sobe, pular desce, mandar pra fila da prioridade. Musicas amadas aparecem mais no shuffle, as evitadas ficam raras (mas nunca somem de vez).")
+                Spicetify.React.createElement("p", null, "Cada musica tem um score de -35 a +35 que muda conforme seu comportamento: ouvir ate o fim sobe, ouvir pela metade ja da credito parcial, pular desce, mandar pra fila da prioridade. Pelo painel voce pode turbinar ou evitar uma faixa (+10 ou -10). Musicas amadas aparecem mais no shuffle, as evitadas ficam raras (mas nunca somem de vez).")
             ),
 
             Spicetify.React.createElement("div", { className: "as-actions" },
@@ -410,9 +434,31 @@
         s.id = "as-global";
         s.textContent = ".main-nowPlayingBar-right button{border-radius:50% !important;border:none !important;outline:none !important}" +
                          ".main-nowPlayingBar-right button:focus,.main-nowPlayingBar-right button[class*=active]{outline:none !important;box-shadow:none !important;border:none !important}" +
-                         ".main-nowPlayingBar-right button svg{margin:0 !important}";
+                         ".main-nowPlayingBar-right button svg{margin:0 !important}" +
+                         "#as-playbar-button{display:inline-flex;align-items:center;justify-content:center}" +
+                         "#as-playbar-button svg{margin:0 !important}";
         document.body.appendChild(s);
     })();
+
+    function turboTrack(uri, name) {
+        var t = getTrack(uri);
+        t.s = Math.min(t.s + 10, agg().clamp);
+        t.pk++;
+        t.t = Date.now();
+        if (!t.n) t.n = name;
+        saveTracks();
+        notify("Turbinada! Score " + t.s.toFixed(0));
+    }
+
+    function avoidTrack(uri, name) {
+        var t = getTrack(uri);
+        t.s = Math.max(t.s - 10, -agg().clamp);
+        t.sk++;
+        t.t = Date.now();
+        if (!t.n) t.n = name;
+        saveTracks();
+        notify("Evitada! Score " + t.s.toFixed(0));
+    }
 
     function closeActionPanel() {
         var panel = document.getElementById("as-actionpanel");
@@ -471,24 +517,8 @@
         panel.appendChild(item("Embaralhar agora", adaptiveReshuffleCurrentQueue));
 
         if (uri) {
-            panel.appendChild(item("Turbinar esta faixa", function() {
-                var t = getTrack(uri);
-                t.s = Math.min(t.s + 3, agg().clamp);
-                t.pk++;
-                t.t = Date.now();
-                if (!t.n) t.n = name;
-                saveTracks();
-                notify("Turbinada! Score " + t.s.toFixed(0));
-            }));
-            panel.appendChild(item("Evitar esta faixa", function() {
-                var t = getTrack(uri);
-                t.s = Math.max(t.s - 3, -agg().clamp);
-                t.sk++;
-                t.t = Date.now();
-                if (!t.n) t.n = name;
-                saveTracks();
-                notify("Evitada! Score " + t.s.toFixed(0));
-            }));
+            panel.appendChild(item("Turbinar esta faixa", function() { turboTrack(uri, name); }));
+            panel.appendChild(item("Evitar esta faixa", function() { avoidTrack(uri, name); }));
             panel.appendChild(item("Ver score desta faixa", function() {
                 var s = tObj ? tObj.s.toFixed(0) : "?";
                 notify(name + "  Score:" + s + "  p:" + (tObj ? tObj.p : 0) + " s:" + (tObj ? tObj.sk : 0));
@@ -520,6 +550,38 @@
         false, false
     );
     btnShuffle.register();
+
+    // Spotify 1.3.x nao tem mais .main-nowPlayingBar-right: o Spicetify.Playbar nunca acha
+    // onde montar o botao e ele some. Fallback: injeta na linha de botoes da direita
+    // (a mesma do botao de fila/volume) e reinjeta se o React recriar a barra.
+    function findPlaybarRow() {
+        var queueBtn = document.querySelector("[data-testid=control-button-queue]");
+        var el = queueBtn;
+        while (el && el.parentElement) {
+            if (el.parentElement.querySelector(":scope > [data-testid=volume-bar]")) {
+                return { row: el.parentElement, sample: queueBtn };
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    function ensurePlaybarButton() {
+        try {
+            var el = btnShuffle.element;
+            if (el.isConnected) return;
+            var found = findPlaybarRow();
+            if (!found) return;
+            el.id = "as-playbar-button";
+            el.setAttribute("aria-label", "Adaptive Shuffle");
+            // copia as classes de estilo do botao nativo pra ficar com a mesma cara
+            Array.prototype.forEach.call(found.sample.classList, function(c) { el.classList.add(c); });
+            found.row.prepend(el);
+        } catch (e) {}
+    }
+
+    ensurePlaybarButton();
+    setInterval(ensurePlaybarButton, 1000);
 
     // --- UI: CONTEXT MENU (playlist/album/artist only - known working) ---
 
@@ -762,6 +824,7 @@
         version: VERSION, settings: settings, tracks: tracks,
         getTrack: getTrack, recordEvent: recordEvent, weightedShuffle: weightedShuffle,
         reshuffle: adaptiveReshuffleCurrentQueue, playAdaptive: playAdaptive, openSettings: openSettings,
+        turboTrack: turboTrack, avoidTrack: avoidTrack,
         _resetTracking: function() {
             try {
                 var d = Player.data;
@@ -770,7 +833,7 @@
                     lastTrackName = d.item.name || (d.item.metadata && d.item.metadata.title) || "";
                     lastDurationMs = d.duration;
                 }
-                lastProgressMs = 0;
+                lastProgressMs = -1;
             } catch (e) {}
         }
     };
@@ -783,6 +846,7 @@
                 lastTrackName = d.item.name || (d.item.metadata && d.item.metadata.title) || "";
                 lastDurationMs = d.duration;
             }
+            lastProgressMs = -1;
             var qs = getQueueState();
             var p = {};
             for (var i = 0; i < qs.queued.length; i++) p[qs.queued[i]] = true;

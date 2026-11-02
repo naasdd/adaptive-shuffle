@@ -17,7 +17,7 @@ Tudo o que ele aprende fica salvo **localmente** no Spotify (LocalStorage do seu
 1. Use o Spotify normalmente. A extensao aprende sozinha em background.
 2. Quando quiser o shuffle inteligente, clique no **botao unico** `Adaptive Shuffle` na barra do player. Abre um painel com todas as opcoes:
    - **Embaralhar agora** — reordena a fila atual sem parar a musica.
-   - **Turbinar esta faixa** / **Evitar esta faixa** — ajusta o score na hora.
+   - **Turbinar esta faixa** / **Evitar esta faixa** — ajusta o score na hora (+10 / −10).
    - **Ver score desta faixa** — mostra o score, plays e skips.
    - **Resetar esta faixa** — apaga o que ele aprendeu dessa musica especifica.
    - **Configuracoes** / **Como funciona** — abre o menu.
@@ -86,17 +86,18 @@ Os dados aprendidos ficam no LocalStorage do Spotify. Pra apagar: menu do Spicet
 
 ## Como o algoritmo funciona (resumo)
 
-Cada faixa recebe um **score** entre −10 e +10, com **decaimento** (comportamento recente vale mais):
+Cada faixa recebe um **score** entre −35 e +35 (clamp), com **decaimento** de 0.95 (comportamento recente vale mais, mas o histórico acumulado pesa):
 
 | Evento | Efeito (modo Normal) |
 |---|---|
-| Ouviu ≥80% da música | `+2` |
+| Ouviu ≥80% da música | `+3` |
+| Ouviu 25–80% (parcial) | crédito proporcional (até `+3`) |
 | Pulou antes de 25% | `−2` |
 | Pulou antes de 10% (skip pesado) | `−3` |
 | Adicionou à fila manualmente | `+3` |
-| Clicou pra tocar a música | `+2` |
+| Turbinar / Evitar pelo painel | `+10` / `−10` |
 
-No shuffle adaptativo o **peso** de cada faixa é `2^(score/3)` — uma faixa amada (score +9) fica ~**8x** mais provável no topo; uma enjoada (score −9) fica ~**8x** mais rara, mas **nunca é excluída** (seu gosto pode mudar).
+No shuffle adaptativo o **peso** de cada faixa é `2^(score/2)` — uma faixa amada (score +9) fica ~**22x** mais provável no topo; uma enjoada (score −9) fica ~**22x** mais rara, mas **nunca é excluída** (seu gosto pode mudar).
 
 Você pode ajustar a **agressividade** (Leve/Normal/Intenso) nas configurações para os pesos serem mais ou menos forte.
 

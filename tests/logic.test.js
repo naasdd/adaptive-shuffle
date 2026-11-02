@@ -270,6 +270,80 @@ test("persistencia: score sobrevive a um 'restart' (reload da extensão)", () =>
 });
 
 // ============================================================
+// CREDITO PARCIAL (25% - 80%)
+// ============================================================
+
+test("tracker: ouvir 50% => credito parcial (score positivo, menor que full)", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.advanceTo("t:parcial", 100000);
+    api._resetTracking();
+    env.emitProgress(50000); // 50% => parcial
+    env.emitSongChange("t:proxima", 100000);
+    const t = api.getTrack("t:parcial");
+    assert.ok(t.s > 0, `ouvir 50% deve dar score positivo (got ${t.s})`);
+    assert.ok(t.s < 3, `credito parcial deve ser menor que o full (got ${t.s})`);
+    assert.strictEqual(t.p, 0, "parcial nao conta como play completo");
+});
+
+// ============================================================
+// SKIP FANTASMA NO STARTUP
+// ============================================================
+
+test("tracker: sem dados de progresso (startup) NAO gera skip fantasma", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env.advanceTo("t:atual", 100000);
+    api._resetTracking(); // lastProgressMs = -1 (sentinela)
+    env.emitSongChange("t:proxima", 100000);
+    const t = api.getTrack("t:atual");
+    assert.strictEqual(t.s, 0, "nao deve penalizar a musica atual sem progresso conhecido");
+    assert.strictEqual(t.sk, 0, "nao deve contar skip");
+});
+
+// ============================================================
+// INFLACAO DE QUEUEADD PELO RESHUFFLE DA PROPRIO EXTENSAO
+// ============================================================
+
+test("reshuffle: faixas inseridas pela propria extensao NAO ganham queueAdd", async () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    env._queueState.nextUp = [{ uri: "t:a" }, { uri: "t:b" }];
+    env.resetSetQueueCalls();
+    await api.reshuffle();
+    env.emitSongChange("t:current", 100000);
+    assert.strictEqual(api.getTrack("t:a").q, 0, "t:a nao deve ganhar queueAdd da propria extensao");
+    assert.strictEqual(api.getTrack("t:b").q, 0, "t:b nao deve ganhar queueAdd da propria extensao");
+    assert.ok(!api.tracks["spotify:delimiter"], "delimiter nao deve virar faixa no store");
+});
+
+test("migracao: entrada fantasma spotify:delimiter e removida no load", () => {
+    const env = buildMockSpicetify();
+    env.storage.set("adaptiveShuffle:tracks", JSON.stringify({
+        "spotify:delimiter": { s: 3, p: 0, sk: 0, q: 1, pk: 0, t: Date.now(), n: "spotify:delimiter" },
+    }));
+    const api = loadExtension(env);
+    assert.ok(!api.tracks["spotify:delimiter"], "entrada fantasma deve ser removida ao carregar");
+});
+
+// ============================================================
+// TURBO / EVITAR (+10 / -10)
+// ============================================================
+
+test("turboTrack soma +10 e avoidTrack subtrai -10, respeitando clamp", () => {
+    const env = buildMockSpicetify();
+    const api = loadExtension(env);
+    api.turboTrack("t:boost", "Booster");
+    assert.strictEqual(api.getTrack("t:boost").s, 10);
+    api.avoidTrack("t:avoid", "Avoiding");
+    assert.strictEqual(api.getTrack("t:avoid").s, -10);
+    for (let i = 0; i < 4; i++) api.turboTrack("t:clamp", "Clamper");
+    assert.strictEqual(api.getTrack("t:clamp").s, 35, "deve respeitar clamp superior (normal = 35)");
+    for (let i = 0; i < 6; i++) api.avoidTrack("t:clampneg", "Negativo");
+    assert.strictEqual(api.getTrack("t:clampneg").s, -35, "deve respeitar clamp inferior (normal = -35)");
+});
+
+// ============================================================
 // AUTO SHUFFLE
 // ============================================================
 

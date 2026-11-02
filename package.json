@@ -4,6 +4,6 @@
   "description": "Extensão Spicetify: shuffle inteligente que aprende seu comportamento.",
   "private": true,
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test \"tests/*.test.js\""
   }
 }

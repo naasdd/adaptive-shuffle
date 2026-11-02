@@ -40,7 +40,10 @@ function buildMockSpicetify() {
     const _queueState = { nextUp: [], queued: [], current: null };
     let setQueueCalls = [];
     const _client = {
-        setQueue: (arg) => { setQueueCalls.push(arg); },
+        setQueue: (arg) => {
+            setQueueCalls.push(arg);
+            _queueState.queued = (arg.nextTracks || []).map((t) => t.contextTrack.uri);
+        },
     };
     const PlayerAPI = {
         _queue: { _queue: { prevTracks: [], queueRevision: "rev1" }, _client, _queueState },
