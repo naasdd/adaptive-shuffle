@@ -18,7 +18,7 @@ Na primeira vez, aparece uma tela de boas-vindas explicando tudo (dá pra rever 
 2. **Botão ✦ na barra do player** (lado direito, perto da letra/fila) abre o painel:
    - a música atual com capa, **score** e o porquê (“Favorita · 5× até o fim · 1 pulo”);
    - **Turbinar** / **Evitar**: ajuste manual que nunca é esquecido (clicar no oposto volta pro neutro);
-   - **Embaralhar a fila agora**: reordena a playlist/álbum/Curtidas **inteira** pelo seu gosto, sem parar a música e mantendo a sua fila manual na frente;
+   - **Embaralhar a fila agora**: reordena a playlist/álbum/Curtidas **inteira** pelo seu gosto, sem parar a música e mantendo a sua fila manual na frente. Trocar de playlist ou desligar o aleatório desfaz essa ordem na hora;
    - **Shuffle automático** (liga/desliga direto no painel);
    - **Esquecer o que aprendi desta faixa**, **Configurações e estatísticas**, **Como funciona**.
 3. **Botão direito numa playlist, álbum, artista ou Músicas Curtidas → `Tocar com Adaptive Shuffle`.**

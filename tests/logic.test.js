@@ -314,7 +314,7 @@ test("tracker: troca causada pela propria extensao nao penaliza a faixa atual", 
     env.changeTrack(A);
     env.play(5000);
     await api.playAdaptive("spotify:playlist:p2");
-    assert.strictEqual(env.Spicetify.Player._nextCalls, 1);
+    assert.strictEqual(env.Spicetify.Platform.PlayerAPI._lastPlay.ctx.uri, "spotify:playlist:p2");
     env.changeTrack(B);
     const s = api.peekSong(A.uri);
     assert.ok(!s || s.sk === 0, "A nao foi pulada pelo usuario");
@@ -501,8 +501,11 @@ test("playAdaptive: toca a playlist na ordem adaptativa e atualiza o contexto", 
     env.addPlaylist("spotify:playlist:p9", [A, B, C, D]);
     await api.playAdaptive("spotify:playlist:p9");
     const uris = env.setQueueCalls()[0].nextTracks.map((t) => t.contextTrack.uri);
-    assert.strictEqual(uris.length, 5);
-    assert.strictEqual(env.Spicetify.Platform.PlayerAPI._lastContext.uri, "spotify:playlist:p9");
+    assert.strictEqual(uris.length, 4, "a primeira toca direto, o resto vai pra fila");
+    const played = env.Spicetify.Platform.PlayerAPI._lastPlay;
+    assert.strictEqual(played.ctx.uri, "spotify:playlist:p9");
+    assert.strictEqual(env.Spicetify.Player.data.context.uri, "spotify:playlist:p9");
+    assert.ok(!uris.includes(played.opts.skipTo.uri));
 });
 
 test("shuffle automatico: com o aleatorio do Spotify ligado, assume ao comecar um contexto novo", async () => {
@@ -586,4 +589,69 @@ test("configuracoes: descarta chaves antigas e mantem as escolhas do usuario", (
     assert.strictEqual(api.settings.autoShuffle, true);
     assert.strictEqual(api.settings.clamp, undefined);
     assert.strictEqual(api.settings.decay, undefined);
+});
+
+function reshuffledEnv() {
+    const env = buildMockSpicetify();
+    const tracks = ["a", "b", "c", "d"].map((x) => ({ uri: "spotify:track:" + x, name: x.toUpperCase(), artist: "Art" + x }));
+    env.addPlaylist("spotify:playlist:um", tracks);
+    env.initTrack({ uri: "spotify:track:cur", name: "Atual", artist: "X", context: "spotify:playlist:um" });
+    env.setQueue({ nextUp: [{ uri: "spotify:track:n1", name: "N1", artist: "Y", uid: "nat" }] });
+    return { env, api: loadExtension(env) };
+}
+const uris = (env) => env._queue.nextTracks.map((t) => t.contextTrack.uri.split(":").pop());
+
+test("fila: o que o usuario adiciona vai pra frente da ordem da extensao, na hora", async () => {
+    const { env, api } = reshuffledEnv();
+    await api.reshuffle({ silent: true });
+    env.addToQueue({ uri: "spotify:track:minha", name: "Minha", artist: "Z" });
+    assert.strictEqual(uris(env)[0], "minha");
+    assert.strictEqual(env._queueState.queued.length, 1);
+    assert.strictEqual(api._tidyQueue(), false, "ja esta arrumada");
+});
+
+test("fila: trocar de playlist tira a ordem antiga e mantem a fila manual", async () => {
+    const { env, api } = reshuffledEnv();
+    env.setQueue({ queued: [], nextUp: [] });
+    await api.reshuffle({ silent: true });
+    env.addToQueue({ uri: "spotify:track:minha", name: "Minha", artist: "Z" });
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    assert.deepStrictEqual(uris(env), ["minha"]);
+});
+
+test("fila: mudar de playlist durante o reshuffle nao aplica a ordem velha", async () => {
+    const { env, api } = reshuffledEnv();
+    const pending = api.reshuffle({ silent: true });
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    assert.strictEqual(await pending, false);
+    assert.ok(!uris(env).includes("a"));
+});
+
+test("fila: desligar o aleatorio volta pra ordem normal", async () => {
+    const { env, api } = reshuffledEnv();
+    env.Spicetify.Player.data.shuffle = true;
+    env.play(1000);
+    await api.reshuffle({ silent: true });
+    assert.ok(uris(env).includes("a"));
+    env.Spicetify.Player.data.shuffle = false;
+    env.play(1000);
+    assert.ok(!uris(env).includes("a"));
+});
+
+test("fila: sobra de ordem de uma sessao anterior e limpa ao mudar de playlist", () => {
+    const env = buildMockSpicetify();
+    env.storage.set("adaptiveShuffle:order", JSON.stringify({ ctx: "spotify:playlist:velha", uris: { "spotify:track:velha": 1 } }));
+    env.initTrack({ uri: "spotify:track:cur", name: "Atual", artist: "X", context: "spotify:playlist:um" });
+    const api = loadExtension(env);
+    env._queue.nextTracks.push({ contextTrack: { uri: "spotify:track:velha", uid: "q9", metadata: {} }, provider: "context" });
+    assert.strictEqual(api._tidyQueue(), true);
+    assert.ok(!uris(env).includes("velha"));
+});
+
+test("fila: faixa do proprio Spotify com uid q nao e removida", async () => {
+    const { env, api } = reshuffledEnv();
+    await api.reshuffle({ silent: true });
+    env._queue.nextTracks.push({ contextTrack: { uri: "spotify:track:nativa", uid: "q9", metadata: {} }, provider: "context" });
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    assert.ok(uris(env).includes("nativa"));
 });

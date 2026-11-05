@@ -65,7 +65,9 @@ function buildMockSpicetify(opts = {}) {
     // ---- fila ----
     const _queueState = { current: null, queued: [], nextUp: [] };
     const _queue = { nextTracks: [], prevTracks: [], queueRevision: "rev1" };
+    const queueListeners = [];
     let setQueueCalls = [];
+    let queueUid = 0;
     const catalog = {}; // uri -> {name, artist}
 
     function syncStateFromRaw() {
@@ -78,15 +80,22 @@ function buildMockSpicetify(opts = {}) {
     const _client = {
         setQueue: (arg) => {
             setQueueCalls.push(arg);
-            _queue.nextTracks = arg.nextTracks.slice();
+            // o que passa pelo setQueue vira entrada de fila (uid "q...")
+            _queue.nextTracks = arg.nextTracks.map((t) => {
+                if (t.contextTrack.uid) return t;
+                return { ...t, contextTrack: { ...t.contextTrack, uid: "q" + (++queueUid) } };
+            });
             syncStateFromRaw();
         },
     };
     const PlayerAPI = {
-        _queue: { _queue, _client, _queueState },
+        _queue: { _queue, _client, _queueState, _events: { addListener: (n, cb) => { if (n === "queue_update") queueListeners.push(cb); } } },
         getState: () => ({ sessionId: "sess-1" }),
-        updateContext: (sid, ctx) => { PlayerAPI._lastContext = ctx; },
-        _lastContext: null,
+        play: async (ctx, origin, opts) => {
+            PlayerAPI._lastPlay = { ctx, opts };
+            env.changeTrack({ uri: opts.skipTo.uri, ...(catalog[opts.skipTo.uri] || {}), context: ctx.uri });
+        },
+        _lastPlay: null,
     };
 
     const playlists = {}; // uri -> [tracks]
@@ -185,6 +194,15 @@ function buildMockSpicetify(opts = {}) {
                 syncStateFromRaw();
             }
             player.dispatchEvent({ type: "songchange", data: player.data });
+        },
+        // Adicionar a fila no Spotify: entra depois das faixas com uid "q..."
+        addToQueue(t) {
+            if (t.name) catalog[t.uri] = { name: t.name, artist: t.artist };
+            let at = 0;
+            _queue.nextTracks.forEach((x, i) => { if (/^q/.test(x.contextTrack.uid) || x.provider === "queue") at = i + 1; });
+            _queue.nextTracks.splice(at, 0, { ...makeRaw(t, "queue"), contextTrack: { uri: t.uri, uid: "q" + (++queueUid), metadata: {} } });
+            syncStateFromRaw();
+            queueListeners.forEach((cb) => cb());
         },
         // Avanca o relogio tocando: posicao anda junto, onprogress a cada `step` ms
         play(ms, step = 1000) {
