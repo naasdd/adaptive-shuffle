@@ -422,7 +422,8 @@
     // Em vez de olhar so a posicao final, soma o tempo realmente ouvido (ignora seeks).
     var cur = null;
     var skipStreak = 0;
-    // a ordem nossa que esta na fila do Spotify: { ctx, uris }. Fica salva pra limpar depois de reiniciar o app
+    // a ordem nossa que esta na fila do Spotify: { ctx, uris }. Fica salva pra limpar depois de reiniciar o app.
+    // Nunca e apagada ao ficar velha: na troca de playlist as faixas somem e voltam na fila por instantes.
     var queueOrder = null;
     try { queueOrder = JSON.parse(Spicetify.LocalStorage.get(ORDER_KEY)); } catch (e) {}
     var programmaticUntil = 0;  // trocas de faixa causadas pela propria extensao
@@ -601,11 +602,14 @@
     }
 
     function checkQueueAdds() {
-        var queued = queueState().queued.filter(function (i) { return i && isTrackUri(i.uri); });
+        var real = {};
+        userQueue().forEach(function (t) { real[rawUri(t)] = true; });
+        var queued = queueState().queued.filter(function (i) { return i && isTrackUri(i.uri) && real[i.uri]; });
         var added = queued.filter(function (i) { return !knownQueued[i.uri]; });
         knownQueued = {};
         queued.forEach(function (i) { knownQueued[i.uri] = true; });
-        if (!added.length) return;
+        // dezenas de uma vez nao e gosto: e o Spotify remontando a fila
+        if (!added.length || added.length >= 20) return;
         // adicionar um album inteiro de uma vez e um sinal fraco por faixa
         var amount = added.length >= 5 ? 0.3 : 1;
         added.forEach(function (i) { learn(i.uri, i.name, firstArtist(i.artists), "queueAdd", amount); });
@@ -635,7 +639,6 @@
         Promise.resolve(done).catch(function (e) { debug("setQueue", e); });
     }
     function tidyQueue() {
-        if (now() < programmaticUntil) return false;
         var d = Spicetify.Player.data;
         if (!d || !d.item) return false;
         var raw = rawNextTracks();
@@ -645,8 +648,6 @@
         var others = kept.filter(function (t) { return t.provider !== "queue"; });
         var next = mine.concat(others);
         var same = next.length === raw.length && next.every(function (t, i) { return t === raw[i]; });
-        // so esquece a ordem quando ela saiu mesmo da fila: se o Spotify recusar, tenta de novo
-        if (!valid && queueOrder && !raw.some(isOurs)) setQueueOrder(null);
         if (same) return false;
         writeQueue(next);
         return true;
@@ -819,7 +820,10 @@
             for (var i = 0; i < 30 && !(Spicetify.Player.data && Spicetify.Player.data.item && Spicetify.Player.data.item.uri === order[0]); i++) {
                 await new Promise(function (r) { setTimeout(r, 100); });
             }
-            var actual = contextUriOf(Spicetify.Player.data) || ctxUri;
+            // o usuario mudou de musica ou playlist nesse meio-tempo: nao mexe em mais nada
+            var playing = Spicetify.Player.data;
+            if (!playing || !playing.item || playing.item.uri !== order[0]) return;
+            var actual = contextUriOf(playing) || ctxUri;
             lastAutoContext = actual;
             applyQueue(userQueue().concat(order.slice(1).concat([DELIMITER]).map(contextTrack)), actual);
             notify("Tocando " + order.length + " músicas no Adaptive Shuffle");

@@ -655,3 +655,38 @@ test("fila: faixa do proprio Spotify com uid q nao e removida", async () => {
     env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
     assert.ok(uris(env).includes("nativa"));
 });
+
+test("fila: a ordem velha e limpa mesmo se sumir da fila por um instante na troca", async () => {
+    const { env, api } = reshuffledEnv();
+    await api.reshuffle({ silent: true });
+    const ours = env._queue.nextTracks.slice();
+    env._queue.nextTracks.length = 0; // o Spotify esvazia a fila enquanto troca de contexto
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    env._queue.nextTracks.push(...ours);
+    assert.strictEqual(api._tidyQueue(), true);
+    assert.ok(!uris(env).includes("a"));
+});
+
+test("fila: a ordem velha e limpa logo depois de Tocar com Adaptive Shuffle", async () => {
+    const { env, api } = reshuffledEnv();
+    await api.playAdaptive("spotify:playlist:um");
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    assert.ok(!["a", "b", "c", "d"].some((x) => uris(env).includes(x)));
+});
+
+test("fila: dezenas de faixas de uma vez nao contam como adicao manual", () => {
+    const { env, api } = reshuffledEnv();
+    const many = Array.from({ length: 30 }, (_, i) => ({ uri: "spotify:track:m" + i, name: "M" + i, artist: "Z" }));
+    env.setQueue({ queued: many, nextUp: [] });
+    env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:um" });
+    assert.ok(!api.peekSong("spotify:track:m0"));
+});
+
+test("playAdaptive: se o usuario trocar de musica durante o inicio, a ordem nao e aplicada", async () => {
+    const { env, api } = reshuffledEnv();
+    env.Spicetify.Platform.PlayerAPI.play = async () => {
+        env.changeTrack({ uri: "spotify:track:outra", name: "Outra", artist: "W", context: "spotify:playlist:dois" });
+    };
+    await api.playAdaptive("spotify:playlist:um");
+    assert.ok(!["a", "b", "c", "d"].some((x) => uris(env).includes(x)));
+});
